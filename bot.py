@@ -23,11 +23,13 @@ DATABASE = "minsk.db"
 def init_db():
     conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
+    # Меню: добавляем dish_lower для корректного поиска по кириллице
     c.execute("""
     CREATE TABLE IF NOT EXISTS menu (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         restaurant TEXT NOT NULL,
         dish TEXT NOT NULL,
+        dish_lower TEXT NOT NULL,
         price REAL NOT NULL,
         address TEXT,
         lat REAL,
@@ -115,10 +117,11 @@ async def add_restaurant(message: Message):
         if len(parts) != 6:
             raise ValueError
         name, dish, price, address, lat, lon = [p.strip() for p in parts]
+        dish_lower = dish.lower()               # ← ключевое изменение
         conn = sqlite3.connect(DATABASE)
         conn.execute(
-            "INSERT INTO menu (restaurant, dish, price, address, lat, lon) VALUES (?,?,?,?,?,?)",
-            (name, dish, float(price), address, float(lat), float(lon)),
+            "INSERT INTO menu (restaurant, dish, dish_lower, price, address, lat, lon) VALUES (?,?,?,?,?,?,?)",
+            (name, dish, dish_lower, float(price), address, float(lat), float(lon)),
         )
         conn.commit()
         conn.close()
@@ -244,10 +247,8 @@ async def help_cmd(message: Message):
 # ========== ПОИСК (ВСЕ ОСТАЛЬНЫЕ ТЕКСТОВЫЕ СООБЩЕНИЯ) ==========
 @dp.message()
 async def search_food(message: Message):
-    # Если вдруг пришла команда, начинающаяся с /, но не попавшая в другие обработчики — игнорируем
     if message.text and message.text.startswith('/'):
         return
-    # Игнорируем кнопки, которые уже обработаны (но они не должны сюда попасть, на всякий случай)
     if message.text in ["🍕 Найти блюдо", "📍 Отправить геолокацию", "ℹ️ Помощь"]:
         return
 
@@ -260,7 +261,8 @@ async def search_food(message: Message):
 
     conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
-    c.execute("SELECT * FROM menu WHERE LOWER(dish) LIKE ? ORDER BY price ASC LIMIT 5", (f"%{query}%",))
+    # Ищем по колонке dish_lower, которая уже в нижнем регистре
+    c.execute("SELECT * FROM menu WHERE dish_lower LIKE ? ORDER BY price ASC LIMIT 5", (f"%{query}%",))
     results = c.fetchall()
     conn.close()
 
@@ -269,16 +271,20 @@ async def search_food(message: Message):
         return
 
     answer = f"🍽️ *Результаты по запросу «{query}»:*\n\n"
-    for i, r in enumerate(results, 1):
+    for r in results:
+        # r = (id, restaurant, dish, dish_lower, price, address, lat, lon)
         restaurant = r[1]
-        price = r[3]
-        answer += f"{i}. *{restaurant}* — {price} BYN\n"
+        dish = r[2]
+        price = r[4]
+        lat = r[6]
+        lon = r[7]
+        answer += f"🍴 *{restaurant}* — {dish} {price} BYN\n"
         if user_id in user_location:
             u_lat, u_lon = user_location[user_id]
-            maps_url = f"https://yandex.by/maps/?rtext={u_lat},{u_lon}~{r[5]},{r[6]}&rtt=auto"
+            maps_url = f"https://yandex.by/maps/?rtext={u_lat},{u_lon}~{lat},{lon}&rtt=auto"
             answer += f"   🗺️ [Маршрут от меня]({maps_url})\n"
         else:
-            maps_url = f"https://yandex.by/maps/?mode=search&text={r[5]},{r[6]}"
+            maps_url = f"https://yandex.by/maps/?mode=search&text={lat},{lon}"
             answer += f"   📍 [Посмотреть на карте]({maps_url})\n"
         answer += "\n"
 
@@ -301,10 +307,12 @@ async def import_csv(message: Message):
     with open("temp_import.csv", "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
+            dish = row["Блюдо"]
+            dish_lower = dish.lower()
             conn = sqlite3.connect(DATABASE)
             conn.execute(
-                "INSERT INTO menu (restaurant, dish, price, address, lat, lon) VALUES (?,?,?,?,?,?)",
-                (row["Ресторан"], row["Блюдо"], float(row["Цена"]),
+                "INSERT INTO menu (restaurant, dish, dish_lower, price, address, lat, lon) VALUES (?,?,?,?,?,?,?)",
+                (row["Ресторан"], dish, dish_lower, float(row["Цена"]),
                  row["Адрес"], float(row["lat"]), float(row["lon"])),
             )
             conn.commit()
