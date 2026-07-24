@@ -1,8 +1,10 @@
+import datetime
 import asyncio
 import logging
 import csv
 import io
 import sqlite3
+
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command, CommandObject
 from aiogram.types import (
@@ -13,15 +15,14 @@ from aiogram.types import (
 )
 
 # ========== НАСТРОЙКИ ==========
-BOT_TOKEN = "8663406888:AAF3891CIjS3tASop0B092IlFN7Pato7DMU"       # ← заменить
-ADMIN_ID = 5377564835                        # ← ваш Telegram user ID
+BOT_TOKEN = "8663406888:AAF3891CIjS3tASop0B092IlFN7Pato7DMU"
+ADMIN_ID = 5377564835          # ваш Telegram user ID
 DATABASE = "minsk.db"
 
 # ========== БАЗА ДАННЫХ ==========
 def init_db():
     conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
-    # Таблица меню
     c.execute("""
     CREATE TABLE IF NOT EXISTS menu (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -32,7 +33,6 @@ def init_db():
         lat REAL,
         lon REAL
     )""")
-    # Таблица пользователей (для статистики)
     c.execute("""
     CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
@@ -53,7 +53,7 @@ init_db()
 # ========== БОТ ==========
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-user_location = {}  # {user_id: (lat, lon)}
+user_location = {}
 
 # ========== КЛАВИАТУРА ==========
 main_kb = ReplyKeyboardMarkup(
@@ -65,18 +65,16 @@ main_kb = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
-# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
+# ========== РАБОТА С ПОЛЬЗОВАТЕЛЯМИ ==========
 def update_user(user_id: int, username: str, first_name: str,
                 search: int = 0, loc: int = 0, book: int = 0, source: str = None):
-    """Добавляет или обновляет данные пользователя в таблице users."""
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
     c.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
     if c.fetchone():
         c.execute("""
-            UPDATE users
-            SET username = ?, first_name = ?, last_seen = ?,
+            UPDATE users SET username = ?, first_name = ?, last_seen = ?,
                 search_count = search_count + ?,
                 loc_count = loc_count + ?,
                 book_count = book_count + ?
@@ -91,14 +89,13 @@ def update_user(user_id: int, username: str, first_name: str,
     conn.commit()
     conn.close()
 
-# ========== КОМАНДА /start ==========
+# ========== /start ==========
 @dp.message(Command("start"))
 async def start_cmd(message: Message, command: CommandObject):
     user = message.from_user
     ref = command.args if command.args else None
     source = f"ref_{ref}" if ref else "direct"
     update_user(user.id, user.username, user.first_name, source=source)
-
     await message.answer(
         "🍽️ *Минск.Цены.Маршрут* – найди любимое блюдо по лучшей цене "
         "и проложи маршрут!\n\n"
@@ -140,15 +137,12 @@ async def search_food(message: Message):
 
     answer = f"🍽️ *Результаты по запросу «{query}»:*\n\n"
     for i, r in enumerate(results, 1):
-        # r = (id, restaurant, dish, price, address, lat, lon)
         restaurant = r[1]
         price = r[3]
         answer += f"{i}. *{restaurant}* — {price} BYN\n"
         if user_id in user_location:
             u_lat, u_lon = user_location[user_id]
-            maps_url = (
-                f"https://yandex.by/maps/?rtext={u_lat},{u_lon}~{r[5]},{r[6]}&rtt=auto"
-            )
+            maps_url = f"https://yandex.by/maps/?rtext={u_lat},{u_lon}~{r[5]},{r[6]}&rtt=auto"
             answer += f"   🗺️ [Маршрут от меня]({maps_url})\n"
         else:
             maps_url = f"https://yandex.by/maps/?mode=search&text={r[5]},{r[6]}"
@@ -162,14 +156,14 @@ async def search_food(message: Message):
 
     await message.answer(answer, parse_mode="Markdown", disable_web_page_preview=True)
 
-# ========== КНОПКИ МЕНЮ ==========
+# ========== КНОПКИ ==========
 @dp.message(lambda msg: msg.text == "🍕 Найти блюдо по названию")
 async def prompt_search(message: Message):
     await message.answer("Введите название блюда (например, драники, пицца, стейк)")
 
 @dp.message(lambda msg: msg.text == "ℹ️ Помощь")
 async def help_cmd(message: Message):
-    help_text = (
+    text = (
         "📌 <b>Как пользоваться ботом:</b>\n"
         "1. Отправьте свою геолокацию (кнопка в меню).\n"
         "2. Напишите название блюда.\n"
@@ -178,15 +172,14 @@ async def help_cmd(message: Message):
         "Сервис не несёт ответственности за актуальность. "
         "Уточняйте стоимость в заведении."
     )
-    await message.answer(help_text, parse_mode="HTML")
+    await message.answer(text, parse_mode="HTML")
 
-# ========== АДМИН-КОМАНДЫ ==========
+# ========== АДМИНКА ==========
 @dp.message(Command("add"))
 async def add_restaurant(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
     try:
-        # /add Васильки|Драники|12.5|ул. Ленина, 10|53.9006|27.5590
         parts = message.text.split(maxsplit=1)[1].split("|")
         if len(parts) != 6:
             raise ValueError
@@ -277,16 +270,12 @@ async def import_csv(message: Message):
             imported += 1
     await message.answer(f"✅ Импортировано {imported} блюд из {message.document.file_name}")
 
-# ========== СТАТИСТИКА ==========
-import datetime  # уже есть в начале, но убедимся
-
 @dp.message(Command("stats"))
 async def show_stats(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
     conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
-    # всего пользователей
     c.execute("SELECT COUNT(*) FROM users")
     total = c.fetchone()[0]
     today = datetime.datetime.now().strftime("%Y-%m-%d")
