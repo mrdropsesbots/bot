@@ -23,13 +23,12 @@ DATABASE = "minsk.db"
 def init_db():
     conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
-    # Меню: добавляем dish_lower для корректного поиска по кириллице
+    # Упрощённая схема: dish_lower больше не нужна
     c.execute("""
     CREATE TABLE IF NOT EXISTS menu (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         restaurant TEXT NOT NULL,
         dish TEXT NOT NULL,
-        dish_lower TEXT NOT NULL,
         price REAL NOT NULL,
         address TEXT,
         lat REAL,
@@ -117,11 +116,10 @@ async def add_restaurant(message: Message):
         if len(parts) != 6:
             raise ValueError
         name, dish, price, address, lat, lon = [p.strip() for p in parts]
-        dish_lower = dish.lower()               # ← ключевое изменение
         conn = sqlite3.connect(DATABASE)
         conn.execute(
-            "INSERT INTO menu (restaurant, dish, dish_lower, price, address, lat, lon) VALUES (?,?,?,?,?,?,?)",
-            (name, dish, dish_lower, float(price), address, float(lat), float(lon)),
+            "INSERT INTO menu (restaurant, dish, price, address, lat, lon) VALUES (?,?,?,?,?,?)",
+            (name, dish, float(price), address, float(lat), float(lon)),
         )
         conn.commit()
         conn.close()
@@ -261,8 +259,11 @@ async def search_food(message: Message):
 
     conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
-    # Ищем по колонке dish_lower, которая уже в нижнем регистре
-    c.execute("SELECT * FROM menu WHERE dish_lower LIKE ? ORDER BY price ASC LIMIT 5", (f"%{query}%",))
+    # Используем LOWER(dish) — не нужна отдельная колонка dish_lower
+    c.execute(
+        "SELECT * FROM menu WHERE LOWER(dish) LIKE ? ORDER BY price ASC LIMIT 5",
+        (f"%{query}%",)
+    )
     results = c.fetchall()
     conn.close()
 
@@ -272,12 +273,12 @@ async def search_food(message: Message):
 
     answer = f"🍽️ *Результаты по запросу «{query}»:*\n\n"
     for r in results:
-        # r = (id, restaurant, dish, dish_lower, price, address, lat, lon)
+        # r = (id, restaurant, dish, price, address, lat, lon)
         restaurant = r[1]
         dish = r[2]
-        price = r[4]
-        lat = r[6]
-        lon = r[7]
+        price = r[3]
+        lat = r[5]
+        lon = r[6]
         answer += f"🍴 *{restaurant}* — {dish} {price} BYN\n"
         if user_id in user_location:
             u_lat, u_lon = user_location[user_id]
@@ -304,20 +305,24 @@ async def import_csv(message: Message):
     file_path = file.file_path
     await bot.download_file(file_path, "temp_import.csv")
     imported = 0
+    conn = sqlite3.connect(DATABASE)
     with open("temp_import.csv", "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            dish = row["Блюдо"]
-            dish_lower = dish.lower()
-            conn = sqlite3.connect(DATABASE)
+            # strip() убирает лишние пробелы из Excel/Гугл-таблиц
+            restaurant = row["Ресторан"].strip()
+            dish = row["Блюдо"].strip()
+            price = float(row["Цена"].strip())
+            address = row["Адрес"].strip()
+            lat = float(row["lat"].strip())
+            lon = float(row["lon"].strip())
             conn.execute(
-                "INSERT INTO menu (restaurant, dish, dish_lower, price, address, lat, lon) VALUES (?,?,?,?,?,?,?)",
-                (row["Ресторан"], dish, dish_lower, float(row["Цена"]),
-                 row["Адрес"], float(row["lat"]), float(row["lon"])),
+                "INSERT INTO menu (restaurant, dish, price, address, lat, lon) VALUES (?,?,?,?,?,?)",
+                (restaurant, dish, price, address, lat, lon),
             )
-            conn.commit()
-            conn.close()
             imported += 1
+    conn.commit()
+    conn.close()
     await message.answer(f"✅ Импортировано {imported} блюд из {message.document.file_name}")
 
 # ========== ЗАПУСК ==========
