@@ -13,8 +13,7 @@ from aiohttp import web
 # ========== НАСТРОЙКИ ПРЯМО В КОДЕ ==========
 BOT_TOKEN = "8663406888:AAF3891CIjS3tASop0B092IlFN7Pato7DMU"
 ADMIN_ID = 5377564835
-FIREBASE_URL = "https://menu-3328b-default-rtdb.europe-west1.firebasedatabase.app/"
-
+FIREBASE_URL = "https://menu-3328b-default-rtdb.europe-west1.firebasedatabase.app"
 RENDER_HOST = os.getenv("RENDER_EXTERNAL_HOSTNAME")
 WEBHOOK_URL = f"https://{RENDER_HOST}/webhook" if RENDER_HOST else None
 PORT = 10000
