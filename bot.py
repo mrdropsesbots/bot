@@ -11,112 +11,104 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_applicati
 from aiohttp import web
 
 # ========== НАСТРОЙКИ ПРЯМО В КОДЕ ==========
-BOT_TOKEN = "8663406888:AAF3891CIjS3tASop0B092IlFN7Pato7DMU"      # ← замени
-ADMIN_ID = 5377564835                            # ← замени на свой Telegram ID
-SUPABASE_URL = "https://whabfemisufruvkabfnj.supabase.co/rest/v1/"   # ← замени (без слэша в конце)
-SUPABASE_KEY = "sb_secret_4HuEgi9_LUMELEhwY5bnDA_Fz1Vb-Mw"           # ← замени (см. инструкцию ниже)
+BOT_TOKEN = "8663406888:AAF3891CIjS3tASop0B092IlFN7Pato7DMU"          # ← замени
+ADMIN_ID = 5377564835                                # ← замени на свой Telegram ID
+FIREBASE_URL = "https://menu-3328b-default-rtdb.europe-west1.firebasedatabase.app"  # ← замени (без слэша в конце)
 
 RENDER_HOST = os.getenv("RENDER_EXTERNAL_HOSTNAME")
 WEBHOOK_URL = f"https://{RENDER_HOST}/webhook" if RENDER_HOST else None
 PORT = 10000
 
-# ========== SUPABASE REST CLIENT ==========
+# ========== FIREBASE REST CLIENT ==========
 _http_session = None
 
-class SupabaseDB:
+class FirebaseDB:
     def __init__(self, session: aiohttp.ClientSession):
         self.session = session
-        self.base = f"{SUPABASE_URL}/rest/v1"
 
-    def _headers(self, prefer_minimal=False):
-        h = {
-            "apikey": SUPABASE_KEY,
-            "Authorization": f"Bearer {SUPABASE_KEY}",
-            "Content-Type": "application/json",
-        }
-        if prefer_minimal:
-            h["Prefer"] = "return=minimal"
-        return h
-
-    async def _get(self, path, params=None):
-        async with self.session.get(f"{self.base}{path}", headers=self._headers(), params=params) as resp:
+    async def get(self, path):
+        async with self.session.get(f"{FIREBASE_URL}/{path}.json") as resp:
             if resp.status == 200:
-                return await resp.json()
-            logging.error(f"Supabase GET {resp.status}: {await resp.text()}")
-            return []
+                data = await resp.json()
+                return data if data is not None else {}
+            logging.error(f"Firebase GET {path}: {resp.status}")
+            return {}
 
-    async def _post(self, path, data):
-        async with self.session.post(f"{self.base}{path}", headers=self._headers(prefer_minimal=True), json=data) as resp:
-            ok = resp.status in (200, 201, 204)
-            if not ok:
-                logging.error(f"Supabase POST {resp.status}: {await resp.text()}")
-            return ok
+    async def put(self, path, data):
+        async with self.session.put(f"{FIREBASE_URL}/{path}.json", json=data) as resp:
+            return resp.status == 200
 
-    async def _patch(self, path, data, params=None):
-        async with self.session.patch(f"{self.base}{path}", headers=self._headers(), json=data, params=params) as resp:
-            ok = resp.status in (200, 204)
-            if not ok:
-                logging.error(f"Supabase PATCH {resp.status}: {await resp.text()}")
-            return ok
+    async def patch(self, path, data):
+        async with self.session.patch(f"{FIREBASE_URL}/{path}.json", json=data) as resp:
+            return resp.status == 200
 
-    async def _delete(self, path, params):
-        async with self.session.delete(f"{self.base}{path}", headers=self._headers(), params=params) as resp:
-            return resp.status in (200, 204)
+    async def delete(self, path):
+        async with self.session.delete(f"{FIREBASE_URL}/{path}.json") as resp:
+            return resp.status == 200
 
     # --- MENU ---
-    async def search_menu(self, query):
-        return await self._get("/menu", {
-            "dish": f"ilike.*{query}*",
-            "order": "price.asc",
-            "limit": 5,
-        })
+    async def get_menu(self):
+        raw = await self.get("menu")
+        if not raw:
+            return []
+        return [{"id": int(k), **v} for k, v in raw.items() if k.isdigit()]
 
     async def add_menu(self, restaurant, dish, price, address, lat, lon):
-        return await self._post("/menu", {
-            "restaurant": restaurant, "dish": dish, "price": price,
-            "address": address, "lat": lat, "lon": lon,
+        menu = await self.get_menu()
+        new_id = max([m["id"] for m in menu], default=0) + 1
+        await self.put(f"menu/{new_id}", {
+            "restaurant": restaurant,
+            "dish": dish,
+            "price": price,
+            "address": address,
+            "lat": lat,
+            "lon": lon,
         })
+        return new_id
 
     async def delete_menu(self, row_id):
-        return await self._delete("/menu", {"id": f"eq.{row_id}"})
-
-    async def list_menu(self, limit=20):
-        return await self._get("/menu", {"order": "id.desc", "limit": limit})
+        return await self.delete(f"menu/{row_id}")
 
     # --- USERS ---
-    async def get_user(self, user_id):
-        rows = await self._get("/users", {"user_id": f"eq.{user_id}"})
-        return rows[0] if rows else None
-
     async def update_user(self, user_id, username, first_name, search=0, loc=0, source="direct"):
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-        existing = await self.get_user(user_id)
-        if existing:
-            await self._patch("/users", {
-                "username": username, "first_name": first_name, "last_seen": now,
-                "search_count": (existing.get("search_count") or 0) + search,
-                "loc_count": (existing.get("loc_count") or 0) + loc,
-            }, {"user_id": f"eq.{user_id}"})
+        uid = str(user_id)
+        user = await self.get(f"users/{uid}")
+        if user:
+            await self.patch(f"users/{uid}", {
+                "username": username,
+                "first_name": first_name,
+                "last_seen": now,
+                "search_count": user.get("search_count", 0) + search,
+                "loc_count": user.get("loc_count", 0) + loc,
+            })
         else:
-            await self._post("/users", {
-                "user_id": user_id, "username": username, "first_name": first_name,
-                "first_seen": now, "last_seen": now,
-                "search_count": search, "loc_count": loc, "source": source,
+            await self.put(f"users/{uid}", {
+                "user_id": user_id,
+                "username": username,
+                "first_name": first_name,
+                "first_seen": now,
+                "last_seen": now,
+                "search_count": search,
+                "loc_count": loc,
+                "source": source,
             })
 
-    async def stats(self):
-        rows = await self._get("/users", {"select": "*"})
-        total = len(rows)
+    async def get_stats(self):
+        users = await self.get("users")
+        if not users:
+            return 0, 0, 0, 0, 0
+        total = len(users)
         today = datetime.datetime.now().strftime("%Y-%m-%d")
-        dau = sum(1 for r in rows if str(r.get("last_seen", "")).startswith(today))
+        dau = sum(1 for u in users.values() if str(u.get("last_seen", "")).startswith(today))
         week_ago = (datetime.datetime.now() - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
-        wau = sum(1 for r in rows if str(r.get("last_seen", "")) >= week_ago)
-        searches = sum((r.get("search_count") or 0) for r in rows)
-        locs = sum((r.get("loc_count") or 0) for r in rows)
+        wau = sum(1 for u in users.values() if str(u.get("last_seen", "")) >= week_ago)
+        searches = sum(u.get("search_count", 0) for u in users.values())
+        locs = sum(u.get("loc_count", 0) for u in users.values())
         return total, dau, wau, searches, locs
 
 def get_db():
-    return SupabaseDB(_http_session)
+    return FirebaseDB(_http_session)
 
 # ========== БОТ ==========
 bot = Bot(token=BOT_TOKEN)
@@ -132,7 +124,6 @@ main_kb = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
-# ========== КОМАНДЫ ==========
 @dp.message(Command("start"))
 async def start_cmd(message: Message, command: CommandObject):
     user = message.from_user
@@ -156,13 +147,16 @@ async def add_cmd(message: Message):
     try:
         parts = message.text.split(maxsplit=1)[1].split("|")
         if len(parts) != 6:
-            raise ValueError
+            raise ValueError(f"Ожидалось 6 частей, получено {len(parts)}")
         name, dish, price, address, lat, lon = [p.strip() for p in parts]
-        ok = await get_db().add_menu(name, dish, float(price), address, float(lat), float(lon))
-        await message.answer(f"✅ Добавлено: {dish} в {name}" if ok else "❌ Ошибка")
+        new_id = await get_db().add_menu(name, dish, float(price), address, float(lat), float(lon))
+        await message.answer(f"✅ Добавлено id={new_id}: {dish} в {name}")
     except Exception as e:
         logging.error(f"/add error: {e}")
-        await message.answer("❌ Формат:\n`/add Ресторан|Блюдо|Цена|Адрес|lat|lon`", parse_mode="Markdown")
+        await message.answer(
+            f"❌ Ошибка: {e}\n\nФормат:\n`/add Ресторан|Блюдо|Цена|Адрес|lat|lon`",
+            parse_mode="Markdown",
+        )
 
 @dp.message(Command("del"))
 async def del_cmd(message: Message):
@@ -179,29 +173,29 @@ async def del_cmd(message: Message):
 async def list_cmd(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
-    rows = await get_db().list_menu(20)
-    if not rows:
+    menu = await get_db().get_menu()
+    if not menu:
         return await message.answer("База пуста.")
     text = "📋 <b>Последние 20:</b>\n"
-    for r in rows:
-        text += f"{r['id']}. {r['restaurant']} | {r['dish']} | {r['price']} BYN\n"
+    for m in menu[-20:]:
+        text += f"{m['id']}. {m['restaurant']} | {m['dish']} | {m['price']} BYN\n"
     await message.answer(text, parse_mode="HTML")
 
 @dp.message(Command("check"))
 async def check_cmd(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
-    rows = await get_db().list_menu(5)
-    text = f"📋 <b>Последние 5:</b>\n"
-    for r in rows:
-        text += f"<code>{r}</code>\n"
+    menu = await get_db().get_menu()
+    text = f"📋 <b>Всего:</b> {len(menu)}\n\n<b>Последние 5:</b>\n"
+    for m in menu[-5:]:
+        text += f"<code>{m}</code>\n"
     await message.answer(text, parse_mode="HTML")
 
 @dp.message(Command("stats"))
 async def stats_cmd(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
-    total, dau, wau, searches, locs = await get_db().stats()
+    total, dau, wau, searches, locs = await get_db().get_stats()
     await message.answer(
         f"📊 <b>Статистика:</b>\n"
         f"👥 Всего: {total}\n"
@@ -227,7 +221,7 @@ async def help_cmd(message: Message):
     await message.answer(
         "📌 <b>Как пользоваться:</b>\n"
         "1. Отправь геолокацию.\n"
-        "2. Напиши название блюда.\n"
+        2. Напиши название блюда.\n"
         "3. Получи цены и маршрут.",
         parse_mode="HTML",
     )
@@ -246,20 +240,24 @@ async def search_food(message: Message):
     uid = message.from_user.id
     await get_db().update_user(uid, message.from_user.username or "", message.from_user.first_name or "", 1, 0)
 
-    rows = await get_db().search_menu(query)
-    if not rows:
+    menu = await get_db().get_menu()
+    results = [m for m in menu if query in m.get("dish", "").lower()]
+    results.sort(key=lambda x: x.get("price", 9999))
+    results = results[:5]
+
+    if not results:
         await message.answer(f"❌ По запросу «{query}» ничего не найдено.")
         return
 
     answer = f"🍽️ *Результаты по «{query}»:*\n\n"
-    for r in rows:
-        answer += f"🍴 *{r['restaurant']}* — {r['dish']} {r['price']} BYN\n"
+    for m in results:
+        answer += f"🍴 *{m['restaurant']}* — {m['dish']} {m['price']} BYN\n"
         if uid in user_location:
             u_lat, u_lon = user_location[uid]
-            url = f"https://yandex.by/maps/?rtext={u_lat},{u_lon}~{r['lat']},{r['lon']}&rtt=auto"
+            url = f"https://yandex.by/maps/?rtext={u_lat},{u_lon}~{m['lat']},{m['lon']}&rtt=auto"
             answer += f"   🗺️ [Маршрут]({url})\n"
         else:
-            url = f"https://yandex.by/maps/?mode=search&text={r['lat']},{r['lon']}"
+            url = f"https://yandex.by/maps/?mode=search&text={m['lat']},{m['lon']}"
             answer += f"   📍 [На карте]({url})\n"
         answer += "\n"
 
@@ -269,7 +267,7 @@ async def search_food(message: Message):
         answer += "🚀 Нажми ссылку для Яндекс.Карт."
     await message.answer(answer, parse_mode="Markdown", disable_web_page_preview=True)
 
-# ========== WEBHOOK / POLLING ==========
+# ========== WEBHOOK ==========
 async def health(request):
     return web.Response(text="OK")
 
