@@ -2,9 +2,8 @@ import os
 import datetime
 import asyncio
 import logging
-import json
-from pathlib import Path
 
+import asyncpg
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command, CommandObject
 from aiogram.types import (
@@ -16,27 +15,52 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_applicati
 from aiohttp import web
 
 # ========== НАСТРОЙКИ ПРЯМО В КОДЕ ==========
-BOT_TOKEN = "8663406888:AAF3891CIjS3tASop0B092IlFN7Pato7DMU"  # ← замени на свой токен
-ADMIN_ID = 5377564835                            # ← замени на свой Telegram ID
+BOT_TOKEN = "ВСТАВЬ_СЮДА_ТОКЕН_ОТ_BOTFATHER"  # ← замени
+ADMIN_ID = 123456789                            # ← замени на свой Telegram ID
 
-# Render сам подставит URL, ничего менять не нужно
+# Render сам подставит хост, ничего менять не нужно
 RENDER_HOST = os.getenv("RENDER_EXTERNAL_HOSTNAME")
 WEBHOOK_URL = f"https://{RENDER_HOST}/webhook" if RENDER_HOST else None
-PORT = 10000  # Render free tier
+PORT = 10000
 
-MENU_FILE = "menu.json"
-USERS_FILE = "users.json"
+# База данных из переменной окружения (пароль нельзя светить в коде)
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://localhost/minsk")
 
-# ========== JSON DB ==========
-def load_json(path):
-    if not Path(path).exists():
-        return [] if path == MENU_FILE else {}
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+# ========== БАЗА ДАННЫХ ==========
+_pool = None
 
-def save_json(path, data):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+async def get_db():
+    global _pool
+    if _pool is None:
+        _pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
+    return _pool
+
+async def init_db():
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS menu (
+                id SERIAL PRIMARY KEY,
+                restaurant TEXT NOT NULL,
+                dish TEXT NOT NULL,
+                price REAL NOT NULL,
+                address TEXT,
+                lat REAL,
+                lon REAL
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                search_count INTEGER DEFAULT 0,
+                loc_count INTEGER DEFAULT 0,
+                source TEXT DEFAULT 'direct'
+            )
+        """)
 
 # ========== БОТ ==========
 bot = Bot(token=BOT_TOKEN)
@@ -52,29 +76,24 @@ main_kb = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
-def update_user(user_id, username, first_name, search=0, loc=0, source="direct"):
+async def update_user(user_id, username, first_name, search=0, loc=0, source="direct"):
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    users = load_json(USERS_FILE)
-    uid = str(user_id)
-    if uid in users:
-        u = users[uid]
-        u["username"] = username
-        u["first_name"] = first_name
-        u["last_seen"] = now
-        u["search_count"] = u.get("search_count", 0) + search
-        u["loc_count"] = u.get("loc_count", 0) + loc
-    else:
-        users[uid] = {
-            "user_id": user_id,
-            "username": username,
-            "first_name": first_name,
-            "first_seen": now,
-            "last_seen": now,
-            "search_count": search,
-            "loc_count": loc,
-            "source": source,
-        }
-    save_json(USERS_FILE, users)
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT user_id FROM users WHERE user_id = $1", user_id)
+        if row:
+            await conn.execute("""
+                UPDATE users SET username = $1, first_name = $2, last_seen = $3,
+                    search_count = search_count + $4,
+                    loc_count = loc_count + $5
+                WHERE user_id = $6
+            """, username, first_name, now, search, loc, user_id)
+        else:
+            await conn.execute("""
+                INSERT INTO users (user_id, username, first_name, first_seen, last_seen,
+                                   search_count, loc_count, source)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            """, user_id, username, first_name, now, now, search, loc, source)
 
 # ========== КОМАНДЫ ==========
 @dp.message(Command("start"))
@@ -82,7 +101,7 @@ async def start_cmd(message: Message, command: CommandObject):
     user = message.from_user
     ref = command.args if command.args else None
     source = f"ref_{ref}" if ref else "direct"
-    update_user(user.id, user.username or "", user.first_name or "", 0, 0, source)
+    await update_user(user.id, user.username or "", user.first_name or "", 0, 0, source)
     await message.answer(
         "🍽️ *Минск.Цены.Маршрут*\n\n"
         "🔹 Отправь геолокацию\n"
@@ -102,24 +121,17 @@ async def add_cmd(message: Message):
         if len(parts) != 6:
             raise ValueError
         name, dish, price, address, lat, lon = [p.strip() for p in parts]
-        menu = load_json(MENU_FILE)
-        new_id = max([m.get("id", 0) for m in menu], default=0) + 1
-        menu.append({
-            "id": new_id,
-            "restaurant": name,
-            "dish": dish,
-            "price": float(price),
-            "address": address,
-            "lat": float(lat),
-            "lon": float(lon),
-        })
-        save_json(MENU_FILE, menu)
-        await message.answer(f"✅ Добавлено id={new_id}: {dish} в {name}")
+        pool = await get_db()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO menu (restaurant, dish, price, address, lat, lon) VALUES ($1,$2,$3,$4,$5,$6)",
+                name, dish, float(price), address, float(lat), float(lon)
+            )
+        await message.answer(f"✅ Добавлено: {dish} в {name}")
     except Exception as e:
         logging.error(f"/add error: {e}")
         await message.answer(
-            "❌ Формат:\n`/add Ресторан|Блюдо|Цена|Адрес|lat|lon`\n\n"
-            "Пример:\n`/add Васильки|Драники|12.50|ул. Ленина, 10|53.9006|27.5590`",
+            "❌ Формат:\n`/add Ресторан|Блюдо|Цена|Адрес|lat|lon`",
             parse_mode="Markdown",
         )
 
@@ -129,11 +141,9 @@ async def del_cmd(message: Message):
         return
     try:
         row_id = int(message.text.split()[1])
-        menu = load_json(MENU_FILE)
-        new_menu = [m for m in menu if m.get("id") != row_id]
-        if len(new_menu) == len(menu):
-            return await message.answer("❌ Запись не найдена")
-        save_json(MENU_FILE, new_menu)
+        pool = await get_db()
+        async with pool.acquire() as conn:
+            result = await conn.execute("DELETE FROM menu WHERE id = $1", row_id)
         await message.answer(f"🗑️ Удалено id={row_id}")
     except Exception:
         await message.answer("Использование: /del id")
@@ -142,36 +152,43 @@ async def del_cmd(message: Message):
 async def list_cmd(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
-    menu = load_json(MENU_FILE)
-    if not menu:
-        return await message.answer("📋 Файл пуст.")
-    text = "📋 <b>Записи:</b>\n"
-    for m in menu[-20:]:
-        text += f"{m['id']}. {m['restaurant']} | {m['dish']} | {m['price']} BYN\n"
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, restaurant, dish, price FROM menu ORDER BY id DESC LIMIT 20"
+        )
+    if not rows:
+        return await message.answer("База пуста.")
+    text = "📋 <b>Последние 20:</b>\n"
+    for r in rows:
+        text += f"{r['id']}. {r['restaurant']} | {r['dish']} | {r['price']} BYN\n"
     await message.answer(text, parse_mode="HTML")
 
 @dp.message(Command("check"))
 async def check_cmd(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
-    menu = load_json(MENU_FILE)
-    text = f"📋 <b>Всего:</b> {len(menu)}\n\n<b>Последние 5:</b>\n"
-    for m in menu[-5:]:
-        text += f"<code>{m}</code>\n"
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT * FROM menu ORDER BY id DESC LIMIT 5")
+    text = "📋 <b>Последние 5:</b>\n"
+    for r in rows:
+        text += f"<code>{dict(r)}</code>\n"
     await message.answer(text, parse_mode="HTML")
 
 @dp.message(Command("stats"))
 async def stats_cmd(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
-    users = load_json(USERS_FILE)
-    total = len(users)
-    today = datetime.datetime.now().strftime("%Y-%m-%d")
-    dau = sum(1 for u in users.values() if u.get("last_seen", "").startswith(today))
-    week_ago = (datetime.datetime.now() - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
-    wau = sum(1 for u in users.values() if u.get("last_seen", "") >= week_ago)
-    searches = sum(u.get("search_count", 0) for u in users.values())
-    locs = sum(u.get("loc_count", 0) for u in users.values())
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        total = await conn.fetchval("SELECT COUNT(*) FROM users")
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        dau = await conn.fetchval("SELECT COUNT(*) FROM users WHERE last_seen >= $1", today)
+        week_ago = (datetime.datetime.now() - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
+        wau = await conn.fetchval("SELECT COUNT(*) FROM users WHERE last_seen >= $1", week_ago)
+        searches = await conn.fetchval("SELECT COALESCE(SUM(search_count),0) FROM users")
+        locs = await conn.fetchval("SELECT COALESCE(SUM(loc_count),0) FROM users")
     text = (
         f"📊 <b>Статистика:</b>\n"
         f"👥 Всего: {total}\n"
@@ -185,7 +202,7 @@ async def stats_cmd(message: Message):
 async def handle_location(message: Message):
     uid = message.from_user.id
     user_location[uid] = (message.location.latitude, message.location.longitude)
-    update_user(uid, message.from_user.username or "", message.from_user.first_name or "", 0, 1)
+    await update_user(uid, message.from_user.username or "", message.from_user.first_name or "", 0, 1)
     await message.answer("✅ Геолокация сохранена! Теперь напиши название блюда.")
 
 @dp.message(lambda msg: msg.text == "🍕 Найти блюдо")
@@ -214,26 +231,29 @@ async def search_food(message: Message):
         return
 
     uid = message.from_user.id
-    update_user(uid, message.from_user.username or "", message.from_user.first_name or "", 1, 0)
+    await update_user(uid, message.from_user.username or "", message.from_user.first_name or "", 1, 0)
 
-    menu = load_json(MENU_FILE)
-    results = [m for m in menu if query in m.get("dish", "").lower()]
-    results.sort(key=lambda x: x.get("price", 9999))
-    results = results[:5]
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, restaurant, dish, price, address, lat, lon FROM menu "
+            "WHERE LOWER(dish) LIKE $1 ORDER BY price ASC LIMIT 5",
+            f"%{query}%"
+        )
 
-    if not results:
+    if not rows:
         await message.answer(f"❌ По запросу «{query}» ничего не найдено.")
         return
 
     answer = f"🍽️ *Результаты по «{query}»:*\n\n"
-    for m in results:
-        answer += f"🍴 *{m['restaurant']}* — {m['dish']} {m['price']} BYN\n"
+    for r in rows:
+        answer += f"🍴 *{r['restaurant']}* — {r['dish']} {r['price']} BYN\n"
         if uid in user_location:
             u_lat, u_lon = user_location[uid]
-            url = f"https://yandex.by/maps/?rtext={u_lat},{u_lon}~{m['lat']},{m['lon']}&rtt=auto"
+            url = f"https://yandex.by/maps/?rtext={u_lat},{u_lon}~{r['lat']},{r['lon']}&rtt=auto"
             answer += f"   🗺️ [Маршрут]({url})\n"
         else:
-            url = f"https://yandex.by/maps/?mode=search&text={m['lat']},{m['lon']}"
+            url = f"https://yandex.by/maps/?mode=search&text={r['lat']},{r['lon']}"
             answer += f"   📍 [На карте]({url})\n"
         answer += "\n"
 
@@ -248,9 +268,9 @@ async def health(request):
     return web.Response(text="OK")
 
 async def on_startup(bot: Bot):
+    await init_db()
     if WEBHOOK_URL:
         await bot.set_webhook(WEBHOOK_URL)
-        logging.info(f"Webhook: {WEBHOOK_URL}")
 
 async def on_shutdown(bot: Bot):
     if WEBHOOK_URL:
@@ -260,6 +280,7 @@ dp.startup.register(on_startup)
 dp.shutdown.register(on_shutdown)
 
 async def run_polling():
+    await init_db()
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
