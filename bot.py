@@ -1,5 +1,3 @@
-
-code = r'''import os
 import datetime
 import asyncio
 import logging
