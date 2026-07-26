@@ -15,11 +15,14 @@ from aiogram.types import (
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 
-# ========== НАСТРОЙКИ ==========
-BOT_TOKEN = os.getenv("BOT_TOKEN", "ВАШ_ТОКЕН")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")   # https://your-bot.onrender.com/webhook
-PORT = int(os.getenv("PORT", "8080"))
+# ========== НАСТРОЙКИ ПРЯМО В КОДЕ ==========
+BOT_TOKEN = "8663406888:AAF3891CIjS3tASop0B092IlFN7Pato7DMU"  # ← замени на свой токен
+ADMIN_ID = 5377564835                            # ← замени на свой Telegram ID
+
+# Render сам подставит URL, ничего менять не нужно
+RENDER_HOST = os.getenv("RENDER_EXTERNAL_HOSTNAME")
+WEBHOOK_URL = f"https://{RENDER_HOST}/webhook" if RENDER_HOST else None
+PORT = 10000  # Render free tier
 
 MENU_FILE = "menu.json"
 USERS_FILE = "users.json"
@@ -143,7 +146,7 @@ async def list_cmd(message: Message):
     if not menu:
         return await message.answer("📋 Файл пуст.")
     text = "📋 <b>Записи:</b>\n"
-    for m in menu[-20:]:  # последние 20
+    for m in menu[-20:]:
         text += f"{m['id']}. {m['restaurant']} | {m['dish']} | {m['price']} BYN\n"
     await message.answer(text, parse_mode="HTML")
 
@@ -247,6 +250,7 @@ async def health(request):
 async def on_startup(bot: Bot):
     if WEBHOOK_URL:
         await bot.set_webhook(WEBHOOK_URL)
+        logging.info(f"Webhook: {WEBHOOK_URL}")
 
 async def on_shutdown(bot: Bot):
     if WEBHOOK_URL:
