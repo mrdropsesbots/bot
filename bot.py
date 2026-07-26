@@ -4,7 +4,9 @@ import asyncio
 import logging
 import csv
 import io
-import sqlite3
+import html
+import secrets
+import aiosqlite
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher
@@ -19,26 +21,26 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_applicati
 from aiohttp import web
 
 # ========== НАСТРОЙКИ ==========
-BOT_TOKEN = "8663406888:AAF3891CIjS3tASop0B092IlFN7Pato7DMU"
-ADMIN_ID = 5377564835
+BOT_TOKEN = os.getenv("BOT_TOKEN", "ВСТАВЬ_ТОКЕН_ОТ_BOTFATHER")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))
+ADMIN_SECRET_KEY = os.getenv("ADMIN_SECRET_KEY", "change-me-in-production")
 
 # Если диск подключен — используем /data, иначе локальный файл (для тестов)
 DATABASE = "/data/minsk.db" if Path("/data").exists() else "minsk.db"
 
 RENDER_HOST = os.getenv("RENDER_EXTERNAL_HOSTNAME")
 WEBHOOK_URL = f"https://{RENDER_HOST}/webhook" if RENDER_HOST else None
-PORT = 10000
+PORT = int(os.getenv("PORT", "10000"))
 
 # ========== БАЗА ДАННЫХ ==========
-def get_conn():
-    return sqlite3.connect(DATABASE)
+async def get_conn():
+    return await aiosqlite.connect(DATABASE)
 
-def init_db():
+async def init_db():
     # Создаём папку, если нужно (для локальных тестов)
     Path(DATABASE).parent.mkdir(parents=True, exist_ok=True)
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute("""
+    conn = await get_conn()
+    await conn.execute("""
     CREATE TABLE IF NOT EXISTS menu (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         restaurant TEXT NOT NULL,
@@ -48,7 +50,7 @@ def init_db():
         lat REAL,
         lon REAL
     )""")
-    c.execute("""
+    await conn.execute("""
     CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
         username TEXT,
@@ -57,17 +59,20 @@ def init_db():
         last_seen TEXT NOT NULL,
         search_count INTEGER DEFAULT 0,
         loc_count INTEGER DEFAULT 0,
-        source TEXT DEFAULT 'direct'
+        source TEXT DEFAULT 'direct',
+        lat REAL,
+        lon REAL
     )""")
-    conn.commit()
-    conn.close()
-
-init_db()
+    # Индекс для быстрого поиска по блюдам
+    await conn.execute("""
+    CREATE INDEX IF NOT EXISTS idx_dish_lower ON menu(LOWER(dish))
+    """)
+    await conn.commit()
+    await conn.close()
 
 # ========== БОТ ==========
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-user_location = {}
 
 main_kb = ReplyKeyboardMarkup(
     keyboard=[
@@ -78,26 +83,28 @@ main_kb = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
-def update_user(user_id, username, first_name, search=0, loc=0, source="direct"):
+async def update_user(user_id, username, first_name, search=0, loc=0, source="direct", lat=None, lon=None):
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
-    if c.fetchone():
-        c.execute("""
+    conn = await get_conn()
+    c = await conn.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
+    row = await c.fetchone()
+    if row:
+        await conn.execute("""
             UPDATE users SET username = ?, first_name = ?, last_seen = ?,
                 search_count = search_count + ?,
-                loc_count = loc_count + ?
+                loc_count = loc_count + ?,
+                lat = COALESCE(?, lat),
+                lon = COALESCE(?, lon)
             WHERE user_id = ?
-        """, (username, first_name, now, search, loc, user_id))
+        """, (username, first_name, now, search, loc, lat, lon, user_id))
     else:
-        c.execute("""
+        await conn.execute("""
             INSERT INTO users (user_id, username, first_name, first_seen, last_seen,
-                               search_count, loc_count, source)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (user_id, username, first_name, now, now, search, loc, source))
-    conn.commit()
-    conn.close()
+                               search_count, loc_count, source, lat, lon)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (user_id, username, first_name, now, now, search, loc, source, lat, lon))
+    await conn.commit()
+    await conn.close()
 
 # ========== TELEGRAM КОМАНДЫ ==========
 @dp.message(Command("start"))
@@ -105,7 +112,7 @@ async def start_cmd(message: Message, command: CommandObject):
     user = message.from_user
     ref = command.args if command.args else None
     source = f"ref_{ref}" if ref else "direct"
-    update_user(user.id, user.username or "", user.first_name or "", 0, 0, source)
+    await update_user(user.id, user.username or "", user.first_name or "", 0, 0, source)
     await message.answer(
         "🍽️ *Минск.Цены.Маршрут*\n\n"
         "🔹 Отправь геолокацию\n"
@@ -125,13 +132,13 @@ async def add_cmd(message: Message):
         if len(parts) != 6:
             raise ValueError
         name, dish, price, address, lat, lon = [p.strip() for p in parts]
-        conn = get_conn()
-        conn.execute(
+        conn = await get_conn()
+        await conn.execute(
             "INSERT INTO menu (restaurant, dish, price, address, lat, lon) VALUES (?,?,?,?,?,?)",
             (name, dish, float(price), address, float(lat), float(lon)),
         )
-        conn.commit()
-        conn.close()
+        await conn.commit()
+        await conn.close()
         await message.answer(f"✅ Добавлено: {dish} в {name}")
     except Exception as e:
         logging.error(f"/add error: {e}")
@@ -146,10 +153,10 @@ async def del_cmd(message: Message):
         return
     try:
         row_id = int(message.text.split()[1])
-        conn = get_conn()
-        conn.execute("DELETE FROM menu WHERE id = ?", (row_id,))
-        conn.commit()
-        conn.close()
+        conn = await get_conn()
+        await conn.execute("DELETE FROM menu WHERE id = ?", (row_id,))
+        await conn.commit()
+        await conn.close()
         await message.answer(f"🗑️ Удалено id={row_id}")
     except Exception:
         await message.answer("Использование: /del id")
@@ -158,9 +165,11 @@ async def del_cmd(message: Message):
 async def list_cmd(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
-    conn = get_conn()
-    rows = conn.execute("SELECT id, restaurant, dish, price FROM menu ORDER BY id DESC LIMIT 20").fetchall()
-    conn.close()
+    conn = await get_conn()
+    rows = await conn.execute_fetchall(
+        "SELECT id, restaurant, dish, price FROM menu ORDER BY id DESC LIMIT 20"
+    )
+    await conn.close()
     if not rows:
         return await message.answer("База пуста.")
     text = "📋 <b>Последние 20:</b>\n"
@@ -172,9 +181,11 @@ async def list_cmd(message: Message):
 async def check_cmd(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
-    conn = get_conn()
-    rows = conn.execute("SELECT * FROM menu ORDER BY id DESC LIMIT 5").fetchall()
-    conn.close()
+    conn = await get_conn()
+    rows = await conn.execute_fetchall(
+        "SELECT * FROM menu ORDER BY id DESC LIMIT 5"
+    )
+    await conn.close()
     text = "📋 <b>Последние 5:</b>\n"
     for r in rows:
         text += f"<code>{r}</code>\n"
@@ -184,9 +195,11 @@ async def check_cmd(message: Message):
 async def export_cmd(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
-    conn = get_conn()
-    rows = conn.execute("SELECT restaurant, dish, price, address, lat, lon FROM menu").fetchall()
-    conn.close()
+    conn = await get_conn()
+    rows = await conn.execute_fetchall(
+        "SELECT restaurant, dish, price, address, lat, lon FROM menu"
+    )
+    await conn.close()
     if not rows:
         return await message.answer("База пуста.")
     output = io.StringIO()
@@ -203,19 +216,18 @@ async def export_cmd(message: Message):
 async def stats_cmd(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM users")
-    total = c.fetchone()[0]
+    conn = await get_conn()
+    c = await conn.execute("SELECT COUNT(*) FROM users")
+    total = (await c.fetchone())[0]
     today = datetime.datetime.now().strftime("%Y-%m-%d")
-    c.execute("SELECT COUNT(*) FROM users WHERE last_seen >= ?", (today,))
-    dau = c.fetchone()[0]
+    c = await conn.execute("SELECT COUNT(*) FROM users WHERE last_seen >= ?", (today,))
+    dau = (await c.fetchone())[0]
     week_ago = (datetime.datetime.now() - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
-    c.execute("SELECT COUNT(*) FROM users WHERE last_seen >= ?", (week_ago,))
-    wau = c.fetchone()[0]
-    c.execute("SELECT SUM(search_count), SUM(loc_count) FROM users")
-    searches, locs = c.fetchone()
-    conn.close()
+    c = await conn.execute("SELECT COUNT(*) FROM users WHERE last_seen >= ?", (week_ago,))
+    wau = (await c.fetchone())[0]
+    c = await conn.execute("SELECT SUM(search_count), SUM(loc_count) FROM users")
+    searches, locs = await c.fetchone()
+    await conn.close()
     text = (
         f"📊 <b>Статистика:</b>\n"
         f"👥 Всего: {total}\n"
@@ -228,8 +240,9 @@ async def stats_cmd(message: Message):
 @dp.message(lambda msg: msg.location is not None)
 async def handle_location(message: Message):
     uid = message.from_user.id
-    user_location[uid] = (message.location.latitude, message.location.longitude)
-    update_user(uid, message.from_user.username or "", message.from_user.first_name or "", 0, 1)
+    lat = message.location.latitude
+    lon = message.location.longitude
+    await update_user(uid, message.from_user.username or "", message.from_user.first_name or "", 0, 1, lat=lat, lon=lon)
     await message.answer("✅ Геолокация сохранена! Теперь напиши название блюда.")
 
 @dp.message(lambda msg: msg.text == "🍕 Найти блюдо")
@@ -258,26 +271,32 @@ async def search_food(message: Message):
         return
 
     uid = message.from_user.id
-    update_user(uid, message.from_user.username or "", message.from_user.first_name or "", 1, 0)
+    await update_user(uid, message.from_user.username or "", message.from_user.first_name or "", 1, 0)
 
-    conn = get_conn()
-    rows = conn.execute(
+    conn = await get_conn()
+    rows = await conn.execute_fetchall(
         "SELECT id, restaurant, dish, price, address, lat, lon FROM menu "
         "WHERE LOWER(dish) LIKE ? ORDER BY price ASC LIMIT 5",
         (f"%{query}%",)
-    ).fetchall()
-    conn.close()
+    )
+    await conn.close()
 
     if not rows:
         await message.answer(f"❌ По запросу «{query}» ничего не найдено.")
         return
 
+    # Получаем сохранённую геолокацию пользователя из БД
+    conn = await get_conn()
+    c = await conn.execute("SELECT lat, lon FROM users WHERE user_id = ?", (uid,))
+    user_loc = await c.fetchone()
+    await conn.close()
+
     answer = f"🍽️ *Результаты по «{query}»:*\n\n"
     for r in rows:
         rid, restaurant, dish, price, address, lat, lon = r
         answer += f"🍴 *{restaurant}* — {dish} {price} BYN\n"
-        if uid in user_location:
-            u_lat, u_lon = user_location[uid]
+        if user_loc and user_loc[0] is not None:
+            u_lat, u_lon = user_loc
             url = f"https://yandex.by/maps/?rtext={u_lat},{u_lon}~{lat},{lon}&rtt=auto"
             answer += f"   🗺️ [Маршрут]({url})\n"
         else:
@@ -285,7 +304,7 @@ async def search_food(message: Message):
             answer += f"   📍 [На карте]({url})\n"
         answer += "\n"
 
-    if uid not in user_location:
+    if not user_loc or user_loc[0] is None:
         answer += "💡 *Отправь геолокацию, чтобы построить маршрут от тебя!*"
     else:
         answer += "🚀 Нажми ссылку для Яндекс.Карт."
@@ -315,6 +334,8 @@ th,td{padding:12px;text-align:left;border-bottom:1px solid #eee}
 th{background:#2c3e50;color:#fff}
 tr:hover{background:#f8f9fa}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.pagination{margin-top:15px;text-align:center}
+.pagination a{color:#3498db;text-decoration:none;margin:0 10px}
 @media(max-width:600px){.grid{grid-template-columns:1fr}}
 </style>
 </head>
@@ -323,6 +344,7 @@ tr:hover{background:#f8f9fa}
 <div class="card">
 <h3>➕ Добавить блюдо</h3>
 <form method="post" action="/admin/add">
+<input type="hidden" name="key" value="{key}">
 <div class="grid">
 <input name="restaurant" placeholder="Ресторан" required>
 <input name="dish" placeholder="Блюдо" required>
@@ -340,54 +362,95 @@ tr:hover{background:#f8f9fa}
 <tr><th>ID</th><th>Ресторан</th><th>Блюдо</th><th>Цена</th><th>Адрес</th><th>Lat</th><th>Lon</th><th></th></tr>
 {rows}
 </table>
-<p style="color:#888;font-size:12px">Всего: {count}</p>
+<div class="pagination">{pagination}</div>
+<p style="color:#888;font-size:12px">Всего: {count} | Страница {page}</p>
 </div>
 </body>
 </html>"""
 
+def check_admin_key(request):
+    """Проверяет секретный ключ админки."""
+    key = request.query.get("key", "")
+    if not secrets.compare_digest(key, ADMIN_SECRET_KEY):
+        raise web.HTTPForbidden(text="Access denied")
+    return key
+
 async def admin_page(request):
-    conn = get_conn()
-    rows = conn.execute("SELECT id, restaurant, dish, price, address, lat, lon FROM menu ORDER BY id DESC").fetchall()
-    conn.close()
+    key = check_admin_key(request)
+    
+    page = int(request.query.get("page", 1))
+    per_page = 50
+    offset = (page - 1) * per_page
+    
+    conn = await get_conn()
+    rows = await conn.execute_fetchall(
+        "SELECT id, restaurant, dish, price, address, lat, lon FROM menu ORDER BY id DESC LIMIT ? OFFSET ?",
+        (per_page, offset)
+    )
+    c = await conn.execute("SELECT COUNT(*) FROM menu")
+    total = (await c.fetchone())[0]
+    await conn.close()
+    
     rows_html = ""
     for r in rows:
-        rows_html += f"<tr><td>{r[0]}</td><td>{r[1]}</td><td>{r[2]}</td><td>{r[3]}</td><td>{r[4]}</td><td>{r[5]}</td><td>{r[6]}</td>"
-        rows_html += f'<td><form method="post" action="/admin/del" style="display:inline"><input type="hidden" name="id" value="{r[0]}"><button class="btn-del" type="submit">Удалить</button></form></td></tr>'
+        rows_html += f"<tr><td>{r[0]}</td><td>{html.escape(str(r[1]))}</td><td>{html.escape(str(r[2]))}</td>"
+        rows_html += f"<td>{r[3]}</td><td>{html.escape(str(r[4] or ''))}</td><td>{r[5]}</td><td>{r[6]}</td>"
+        rows_html += f'<td><form method="post" action="/admin/del" style="display:inline"><input type="hidden" name="key" value="{key}"><input type="hidden" name="id" value="{r[0]}"><button class="btn-del" type="submit">Удалить</button></form></td></tr>'
     if not rows:
         rows_html = '<tr><td colspan="8" style="text-align:center;color:#888">Нет записей</td></tr>'
-    html = ADMIN_HTML.format(rows=rows_html, count=len(rows))
-    return web.Response(text=html, content_type="text/html")
+    
+    # Пагинация
+    total_pages = (total + per_page - 1) // per_page
+    pagination = ""
+    if page > 1:
+        pagination += f'<a href="/admin?key={key}&page={page-1}">← Назад</a>'
+    if page < total_pages:
+        pagination += f'<a href="/admin?key={key}&page={page+1}">Вперёд →</a>'
+    
+    html_page = ADMIN_HTML.format(
+        rows=rows_html, 
+        count=total, 
+        page=page,
+        key=key,
+        pagination=pagination
+    )
+    return web.Response(text=html_page, content_type="text/html")
 
 async def admin_add(request):
+    check_admin_key(request)
     data = await request.post()
     try:
-        conn = get_conn()
-        conn.execute(
+        conn = await get_conn()
+        await conn.execute(
             "INSERT INTO menu (restaurant, dish, price, address, lat, lon) VALUES (?,?,?,?,?,?)",
             (data["restaurant"], data["dish"], float(data["price"]), data.get("address", ""), float(data["lat"]), float(data["lon"])),
         )
-        conn.commit()
-        conn.close()
+        await conn.commit()
+        await conn.close()
     except Exception as e:
         logging.error(f"Admin add error: {e}")
-    raise web.HTTPFound("/admin")
+    key = request.query.get("key", "")
+    raise web.HTTPFound(f"/admin?key={key}")
 
 async def admin_del(request):
+    check_admin_key(request)
     data = await request.post()
     try:
-        conn = get_conn()
-        conn.execute("DELETE FROM menu WHERE id = ?", (int(data["id"]),))
-        conn.commit()
-        conn.close()
+        conn = await get_conn()
+        await conn.execute("DELETE FROM menu WHERE id = ?", (int(data["id"]),))
+        await conn.commit()
+        await conn.close()
     except Exception as e:
         logging.error(f"Admin del error: {e}")
-    raise web.HTTPFound("/admin")
+    key = request.query.get("key", "")
+    raise web.HTTPFound(f"/admin?key={key}")
 
 async def health(request):
     return web.Response(text="OK")
 
 # ========== ЗАПУСК ==========
 async def on_startup(bot: Bot):
+    await init_db()
     if WEBHOOK_URL:
         await bot.set_webhook(WEBHOOK_URL)
 
@@ -399,6 +462,7 @@ dp.startup.register(on_startup)
 dp.shutdown.register(on_shutdown)
 
 async def run_polling():
+    await init_db()
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
