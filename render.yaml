@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: minsk-food-bot
+    runtime: python
+    plan: starter  # ← НЕ free, а starter ($7/мес)
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python bot.py"
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      - key: WEBHOOK_URL
+        sync: false
+      - key: PORT
+        value: 10000
+    disk:
+      name: bot-data
+      mountPath: /data
+      sizeGB: 1
