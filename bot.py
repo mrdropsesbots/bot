@@ -4,6 +4,7 @@ import csv
 import sqlite3
 import asyncio
 import tempfile
+
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.types import (
     Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton,
@@ -515,4 +516,4 @@ async def status_cmd(msg: Message):
     cur.execute("SELECT COUNT(*) FROM venues")
     venues_cnt = cur.fetchone()[0]
     cur.execute("SELECT COUNT(*) FROM menu_items")
-    items_
+    items
