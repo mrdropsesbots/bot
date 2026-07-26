@@ -1,4 +1,3 @@
-aiogram>=3.0
-aiohttp>=3.9
-requests
-flask
+aiogram>=3.13
+supabase
+python-dotenv
