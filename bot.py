@@ -11,9 +11,9 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_applicati
 from aiohttp import web
 
 # ========== НАСТРОЙКИ ПРЯМО В КОДЕ ==========
-BOT_TOKEN = "8663406888:AAF3891CIjS3tASop0B092IlFN7Pato7DMU"          # ← замени
-ADMIN_ID = 5377564835                                # ← замени на свой Telegram ID
-FIREBASE_URL = "https://menu-3328b-default-rtdb.europe-west1.firebasedatabase.app"  # ← замени (без слэша в конце)
+BOT_TOKEN = "8663406888:AAF3891CIjS3tASop0B092IlFN7Pato7DMU"
+ADMIN_ID = 5377564835
+FIREBASE_URL = "https://menu-3328b-default-rtdb.europe-west1.firebasedatabase.app/"
 
 RENDER_HOST = os.getenv("RENDER_EXTERNAL_HOSTNAME")
 WEBHOOK_URL = f"https://{RENDER_HOST}/webhook" if RENDER_HOST else None
@@ -46,12 +46,24 @@ class FirebaseDB:
         async with self.session.delete(f"{FIREBASE_URL}/{path}.json") as resp:
             return resp.status == 200
 
-    # --- MENU ---
+    def _normalize(self, data):
+        """Firebase может вернуть dict или list — приводим к списку"""
+        if data is None:
+            return []
+        if isinstance(data, dict):
+            return [{"id": int(k), **v} for k, v in data.items() if k.isdigit()]
+        if isinstance(data, list):
+            # Firebase иногда возвращает list с None на пустых индексах
+            result = []
+            for i, item in enumerate(data):
+                if item is not None:
+                    result.append({"id": i, **item})
+            return result
+        return []
+
     async def get_menu(self):
         raw = await self.get("menu")
-        if not raw:
-            return []
-        return [{"id": int(k), **v} for k, v in raw.items() if k.isdigit()]
+        return self._normalize(raw)
 
     async def add_menu(self, restaurant, dish, price, address, lat, lon):
         menu = await self.get_menu()
@@ -69,7 +81,6 @@ class FirebaseDB:
     async def delete_menu(self, row_id):
         return await self.delete(f"menu/{row_id}")
 
-    # --- USERS ---
     async def update_user(self, user_id, username, first_name, search=0, loc=0, source="direct"):
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         uid = str(user_id)
@@ -98,13 +109,18 @@ class FirebaseDB:
         users = await self.get("users")
         if not users:
             return 0, 0, 0, 0, 0
-        total = len(users)
+        # users может быть dict или list
+        if isinstance(users, dict):
+            user_list = list(users.values())
+        else:
+            user_list = [u for u in users if u is not None]
+        total = len(user_list)
         today = datetime.datetime.now().strftime("%Y-%m-%d")
-        dau = sum(1 for u in users.values() if str(u.get("last_seen", "")).startswith(today))
+        dau = sum(1 for u in user_list if str(u.get("last_seen", "")).startswith(today))
         week_ago = (datetime.datetime.now() - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
-        wau = sum(1 for u in users.values() if str(u.get("last_seen", "")) >= week_ago)
-        searches = sum(u.get("search_count", 0) for u in users.values())
-        locs = sum(u.get("loc_count", 0) for u in users.values())
+        wau = sum(1 for u in user_list if str(u.get("last_seen", "")) >= week_ago)
+        searches = sum(u.get("search_count", 0) for u in user_list)
+        locs = sum(u.get("loc_count", 0) for u in user_list)
         return total, dau, wau, searches, locs
 
 def get_db():
