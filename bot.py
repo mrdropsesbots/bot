@@ -19,7 +19,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 # --------------------- Настройки ---------------------
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 ADMIN_IDS = list(map(int, os.environ.get("ADMIN_IDS", "").split(","))) if os.environ.get("ADMIN_IDS") else []
-DB_PATH = os.environ.get("DB_PATH", "/data/places.db")   # для Render
+DB_PATH = os.environ.get("DB_PATH", "/data/places.db")
 SHEET_URL_VENUES = os.environ.get("SHEET_URL_VENUES", "")
 SHEET_URL_MENU   = os.environ.get("SHEET_URL_MENU", "")
 
@@ -233,7 +233,6 @@ async def handle_location(msg: Message):
         ]),
         parse_mode="HTML"
     )
-    # Возвращаем главное меню под сообщением
     await msg.answer("Ожидаю выбор...", reply_markup=main_menu())
 
 @router.callback_query(F.data.startswith("cat:"))
@@ -531,3 +530,4 @@ async def add_venue_desc(msg: Message, state: FSMContext):
 # Добавление позиции меню
 @router.message(StateFilter(None), F.text == "🍽️ Добавить позицию меню", is_admin)
 async def add_item_start(msg: Message, state: FSMContext):
+    await msg.answer("Введите <b>название заведения</b>, к к
