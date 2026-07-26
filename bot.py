@@ -221,7 +221,7 @@ async def help_cmd(message: Message):
     await message.answer(
         "📌 <b>Как пользоваться:</b>\n"
         "1. Отправь геолокацию.\n"
-        2. Напиши название блюда.\n"
+        "2. Напиши название блюда.\n"
         "3. Получи цены и маршрут.",
         parse_mode="HTML",
     )
