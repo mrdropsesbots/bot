@@ -4,14 +4,12 @@ import asyncio
 import logging
 import csv
 import io
-import html
-import secrets
 import aiosqlite
 from pathlib import Path
 from math import radians, sin, cos, sqrt, atan2
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import Command, CommandObject
+from aiogram.filters import Command
 from aiogram.types import (
     Message,
     ReplyKeyboardMarkup,
@@ -19,19 +17,21 @@ from aiogram.types import (
     BufferedInputFile,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    CallbackQuery,
 )
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 
 # ========== НАСТРОЙКИ ==========
-BOT_TOKEN = os.getenv("BOT_TOKEN", "ВСТАВЬ_ТОКЕН_ОТ_BOTFATHER")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 DATABASE = "/data/minsk.db" if Path("/data").exists() else "minsk.db"
 RENDER_HOST = os.getenv("RENDER_EXTERNAL_HOSTNAME")
 WEBHOOK_URL = f"https://{RENDER_HOST}/webhook" if RENDER_HOST else None
 PORT = int(os.getenv("PORT", "10000"))
+
+# ========== ЛОГИ ==========
+logging.basicConfig(level=logging.INFO)
 
 # ========== БАЗА ДАННЫХ ==========
 async def get_conn():
@@ -59,8 +59,7 @@ async def init_db():
         category TEXT NOT NULL,
         dish TEXT NOT NULL,
         description TEXT,
-        price REAL NOT NULL,
-        FOREIGN KEY (restaurant_id) REFERENCES restaurants(id) ON DELETE CASCADE
+        price REAL NOT NULL
     )""")
     await conn.execute("""
     CREATE TABLE IF NOT EXISTS users (
@@ -92,7 +91,6 @@ async def init_db():
         created_at TEXT
     )""")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_menu_dish ON menu(LOWER(dish))")
-    await conn.execute("CREATE INDEX IF NOT EXISTS idx_menu_rest ON menu(restaurant_id)")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_rest_name ON restaurants(LOWER(name))")
     await conn.commit()
     await conn.close()
@@ -101,7 +99,8 @@ async def init_db():
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Клавиатуры
+pending_reviews = {}
+
 def main_kb():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -129,7 +128,6 @@ def admin_kb():
         resize_keyboard=True,
     )
 
-# ========== ПОМОЩНИКИ ==========
 async def update_user(user_id, username, first_name, search=0, loc=0, source="direct", lat=None, lon=None):
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     conn = await get_conn()
@@ -160,23 +158,25 @@ def haversine(lat1, lon1, lat2, lon2):
     a = sin(dlat/2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon/2)**2
     return R * 2 * atan2(sqrt(a), sqrt(1-a))
 
-# ========== КОМАНДЫ ПОЛЬЗОВАТЕЛЯ ==========
+# ========== ПОЛЬЗОВАТЕЛЬ ==========
 @dp.message(Command("start"))
-async def start_cmd(message: Message, command: CommandObject):
-    user = message.from_user
-    ref = command.args if command.args else None
-    source = f"ref_{ref}" if ref else "direct"
-    await update_user(user.id, user.username or "", user.first_name or "", 0, 0, source)
-    text = (
-        "🍽️ *Минск.Рестораны.Маршруты*\n\n"
-        "🔹 *Найти ресторан* — по названию или кухне\n"
-        "🔹 *Меню ресторана* — посмотреть блюда\n"
-        "🔹 *Рядом со мной* — 5 ближайших ресторанов\n"
-        "🔹 *Избранное* — сохранённые рестораны\n"
-        "🔹 *Отзыв* — оценить ресторан\n\n"
-        "Админ: /admin"
-    )
-    await message.answer(text, parse_mode="Markdown", reply_markup=main_kb())
+async def start_cmd(message: Message):
+    try:
+        user = message.from_user
+        await update_user(user.id, user.username or "", user.first_name or "")
+        await message.answer(
+            "🍽️ *Минск.Рестораны.Маршруты*\n\n"
+            "🔹 *Найти ресторан* — по названию или кухне\n"
+            "🔹 *Меню ресторана* — посмотреть блюда\n"
+            "🔹 *Рядом со мной* — 5 ближайших ресторанов\n"
+            "🔹 *Избранное* — сохранённые рестораны\n"
+            "🔹 *Отзыв* — оценить ресторан\n\n"
+            "Админ: /admin",
+            parse_mode="Markdown", reply_markup=main_kb()
+        )
+    except Exception as e:
+        logging.exception("start error")
+        await message.answer("Ошибка. Попробуй позже.")
 
 @dp.message(Command("help"))
 @dp.message(F.text == "ℹ️ Помощь")
@@ -185,7 +185,7 @@ async def help_cmd(message: Message):
         "📌 *Как пользоваться:*\n\n"
         "1️⃣ Отправь геолокацию, чтобы искать рядом\n"
         "2️⃣ Нажми *Найти ресторан* и введи название\n"
-        "3️⃣ Нажми *Меню ресторана* и введи название ресторана\n"
+        "3️⃣ Нажми *Меню ресторана* и введи название\n"
         "4️⃣ Сохраняй рестораны в избранное ⭐\n"
         "5️⃣ Оставляй отзывы 📝\n\n"
         "Маршрут строится через Яндекс.Карты.",
@@ -193,12 +193,12 @@ async def help_cmd(message: Message):
     )
 
 @dp.message(F.text == "🔍 Найти ресторан")
-async def prompt_find_restaurant(message: Message):
-    await message.answer("Введи название ресторана или тип кухни (итальянская, суши, кафе):")
+async def prompt_find(message: Message):
+    await message.answer("Введи название ресторана или тип кухни:")
 
 @dp.message(F.text == "🍽️ Меню ресторана")
 async def prompt_menu(message: Message):
-    await message.answer("Введи название ресторана, меню которого хочешь посмотреть:")
+    await message.answer("Введи название ресторана:")
 
 @dp.message(F.text == "⭐ Избранное")
 async def show_favorites(message: Message):
@@ -217,7 +217,6 @@ async def show_favorites(message: Message):
     for r in rows:
         rid, name, cuisine, address, lat, lon = r
         text += f"🍴 *{name}* ({cuisine or 'нет данных'})\n📍 {address}\n"
-        # Маршрут
         conn2 = await get_conn()
         c = await conn2.execute("SELECT lat, lon FROM users WHERE user_id = ?", (uid,))
         uloc = await c.fetchone()
@@ -233,7 +232,7 @@ async def show_favorites(message: Message):
 
 @dp.message(F.text == "📝 Оставить отзыв")
 async def prompt_review(message: Message):
-    await message.answer("Введи название ресторана, который хочешь оценить:")
+    await message.answer("Введи название ресторана:")
 
 @dp.message(F.location)
 async def handle_location(message: Message):
@@ -252,7 +251,7 @@ async def handle_location(message: Message):
         d = haversine(lat, lon, rlat, rlon)
         nearby.append((d, rid, name, cuisine, address, rlat, rlon))
     nearby.sort(key=lambda x: x[0])
-    text = f"📍 *5 ближайших ресторанов:*\n\n"
+    text = "📍 *5 ближайших ресторанов:*\n\n"
     for d, rid, name, cuisine, address, rlat, rlon in nearby[:5]:
         text += f"🍴 *{name}* ({cuisine or 'нет данных'})\n"
         text += f"📍 {address} ({d:.1f} км)\n"
@@ -260,29 +259,30 @@ async def handle_location(message: Message):
         text += f"🗺️ [Маршрут]({url})\n\n"
     await message.answer(text, parse_mode="Markdown", disable_web_page_preview=True)
 
-# ========== ОБРАБОТКА ТЕКСТА (ПОИСК, МЕНЮ, ОТЗЫВЫ) ==========
+# ========== ТЕКСТОВЫЙ ОБРАБОТЧИК ==========
 @dp.message()
 async def text_handler(message: Message):
-    if not message.text or message.text.startswith('/'):
+    if not message.text:
         return
     uid = message.from_user.id
     text = message.text.strip()
 
-    # Админ-панель
-    if text == "➕ Добавить ресторан" and uid == ADMIN_ID:
-        return await message.answer("Введи данные ресторана в формате:\n`/add_restaurant Название|Кухня|Адрес|Широта|Долгота|Телефон|Часы работы|Средний чек`", parse_mode="Markdown")
-    if text == "🍕 Добавить блюдо" and uid == ADMIN_ID:
-        return await message.answer("Введи данные блюда:\n`/add_dish Название ресторана|Категория|Блюдо|Описание|Цена`", parse_mode="Markdown")
-    if text == "📤 Импорт CSV" and uid == ADMIN_ID:
-        return await message.answer("Отправь CSV-файл с ресторанами или меню. Бот определит тип по заголовкам.")
-    if text == "📥 Экспорт CSV" and uid == ADMIN_ID:
-        return await export_csv_cmd(message)
-    if text == "💰 Массовое изменение цен" and uid == ADMIN_ID:
-        return await message.answer("Введи:\n`/bulk_price Название ресторана (или 'все')|Категория (или 'все')|+10% или -5% или =15.00`", parse_mode="Markdown")
-    if text == "📊 Статистика" and uid == ADMIN_ID:
-        return await stats_cmd(message)
-    if text == "🔙 Назад" and uid == ADMIN_ID:
-        return await message.answer("Главное меню", reply_markup=main_kb())
+    # Админ-кнопки
+    if uid == ADMIN_ID:
+        if text == "➕ Добавить ресторан":
+            return await message.answer("Формат:\n`/add_restaurant Название|Кухня|Адрес|lat|lon|Телефон|Часы|Средний чек`", parse_mode="Markdown")
+        if text == "🍕 Добавить блюдо":
+            return await message.answer("Формат:\n`/add_dish Ресторан|Категория|Блюдо|Описание|Цена`", parse_mode="Markdown")
+        if text == "📤 Импорт CSV":
+            return await message.answer("Отправь CSV-файл как документ.")
+        if text == "📥 Экспорт CSV":
+            return await export_csv(message)
+        if text == "💰 Массовое изменение цен":
+            return await message.answer("Формат:\n`/bulk_price Ресторан|Категория|+10%`", parse_mode="Markdown")
+        if text == "📊 Статистика":
+            return await stats_cmd(message)
+        if text == "🔙 Назад":
+            return await message.answer("Главное меню", reply_markup=main_kb())
 
     # Поиск ресторана
     conn = await get_conn()
@@ -294,23 +294,20 @@ async def text_handler(message: Message):
     if rows:
         await conn.close()
         await update_user(uid, message.from_user.username or "", message.from_user.first_name or "", 1, 0)
-        answer = f"🔍 *Найдено ресторанов:* {len(rows)}\n\n"
         for r in rows:
             rid, name, cuisine, address, lat, lon, phone, wh, avg = r
-            answer += f"🍴 *{name}*\n"
+            answer = f"🍴 *{name}*\n"
             if cuisine: answer += f"🍳 Кухня: {cuisine}\n"
             answer += f"📍 {address}\n"
             if phone: answer += f"📞 {phone}\n"
             if wh: answer += f"🕐 {wh}\n"
             if avg: answer += f"💰 Средний чек: {avg} BYN\n"
-            # Кнопки
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="📋 Меню", callback_data=f"menu_{rid}"),
                  InlineKeyboardButton(text="⭐ В избранное", callback_data=f"fav_{rid}")],
                 [InlineKeyboardButton(text="🗺️ Маршрут", callback_data=f"route_{rid}"),
                  InlineKeyboardButton(text="📝 Отзывы", callback_data=f"reviews_{rid}")]
             ])
-            # Маршрут от пользователя
             conn2 = await get_conn()
             c = await conn2.execute("SELECT lat, lon FROM users WHERE user_id = ?", (uid,))
             uloc = await c.fetchone()
@@ -321,9 +318,7 @@ async def text_handler(message: Message):
             else:
                 url = f"https://yandex.by/maps/?mode=search&text={lat},{lon}"
                 answer += f"🗺️ [На карте]({url})\n"
-            answer += "\n"
             await message.answer(answer, parse_mode="Markdown", reply_markup=kb, disable_web_page_preview=True)
-            answer = ""
         return
 
     # Меню ресторана
@@ -334,8 +329,7 @@ async def text_handler(message: Message):
     if rows:
         await conn.close()
         for r in rows:
-            rid = r[0]
-            rname = r[1]
+            rid, rname = r
             conn2 = await get_conn()
             dishes = await conn2.execute_fetchall(
                 "SELECT category, dish, description, price FROM menu WHERE restaurant_id = ? ORDER BY category, price",
@@ -343,7 +337,7 @@ async def text_handler(message: Message):
             )
             await conn2.close()
             if not dishes:
-                await message.answer(f"📋 В ресторане *{rname}* пока нет блюд в меню.", parse_mode="Markdown")
+                await message.answer(f"📋 В ресторане *{rname}* пока нет блюд.", parse_mode="Markdown")
                 continue
             answer = f"📋 *Меню: {rname}*\n\n"
             current_cat = ""
@@ -358,7 +352,7 @@ async def text_handler(message: Message):
             await message.answer(answer, parse_mode="Markdown")
         return
 
-    # Отзыв — проверим, есть ли такой ресторан
+    # Отзыв
     rows = await conn.execute_fetchall(
         "SELECT id, name FROM restaurants WHERE LOWER(name) LIKE ? LIMIT 1",
         (f"%{text.lower()}%",)
@@ -367,7 +361,7 @@ async def text_handler(message: Message):
         rid, rname = rows[0]
         await conn.close()
         await message.answer(
-            f"Оцени ресторан *{rname}* от 1 до 5 звёзд:",
+            f"Оцени ресторан *{rname}*:",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⭐", callback_data=f"rate_{rid}_1"),
@@ -380,93 +374,90 @@ async def text_handler(message: Message):
         return
 
     await conn.close()
-    await message.answer(f"❌ По запросу «{text}» ничего не найдено.\n\nПопробуй написать иначе или отправь геолокацию 📍")
+    await message.answer(f"❌ По запросу «{text}» ничего не найдено.")
 
 # ========== CALLBACKS ==========
 @dp.callback_query()
-async def callbacks(callback: CallbackQuery):
+async def callbacks(callback):
     data = callback.data
     uid = callback.from_user.id
+    try:
+        if data.startswith("menu_"):
+            rid = int(data.split("_")[1])
+            conn = await get_conn()
+            rname = (await conn.execute_fetchall("SELECT name FROM restaurants WHERE id = ?", (rid,)))[0][0]
+            dishes = await conn.execute_fetchall(
+                "SELECT category, dish, description, price FROM menu WHERE restaurant_id = ? ORDER BY category, price",
+                (rid,)
+            )
+            await conn.close()
+            if not dishes:
+                return await callback.message.answer("📋 Меню пусто.")
+            answer = f"📋 *Меню: {rname}*\n\n"
+            current_cat = ""
+            for d in dishes:
+                cat, dish, desc, price = d
+                if cat != current_cat:
+                    answer += f"\n*{cat}*\n"
+                    current_cat = cat
+                answer += f"• {dish} — {price} BYN"
+                if desc: answer += f" ({desc})"
+                answer += "\n"
+            await callback.message.answer(answer, parse_mode="Markdown")
 
-    if data.startswith("menu_"):
-        rid = int(data.split("_")[1])
-        conn = await get_conn()
-        rname = (await conn.execute_fetchall("SELECT name FROM restaurants WHERE id = ?", (rid,)))[0][0]
-        dishes = await conn.execute_fetchall(
-            "SELECT category, dish, description, price FROM menu WHERE restaurant_id = ? ORDER BY category, price",
-            (rid,)
-        )
-        await conn.close()
-        if not dishes:
-            return await callback.message.answer("📋 Меню пока пусто.")
-        answer = f"📋 *Меню: {rname}*\n\n"
-        current_cat = ""
-        for d in dishes:
-            cat, dish, desc, price = d
-            if cat != current_cat:
-                answer += f"\n*{cat}*\n"
-                current_cat = cat
-            answer += f"• {dish} — {price} BYN"
-            if desc: answer += f" ({desc})"
-            answer += "\n"
-        await callback.message.answer(answer, parse_mode="Markdown")
+        elif data.startswith("fav_"):
+            rid = int(data.split("_")[1])
+            conn = await get_conn()
+            await conn.execute("INSERT OR IGNORE INTO favorites (user_id, restaurant_id, added_at) VALUES (?,?,?)",
+                               (uid, rid, datetime.datetime.now().isoformat()))
+            await conn.commit()
+            await conn.close()
+            await callback.answer("⭐ Добавлено в избранное!")
 
-    elif data.startswith("fav_"):
-        rid = int(data.split("_")[1])
-        conn = await get_conn()
-        await conn.execute("INSERT OR IGNORE INTO favorites (user_id, restaurant_id, added_at) VALUES (?,?,?)",
-                           (uid, rid, datetime.datetime.now().isoformat()))
-        await conn.commit()
-        await conn.close()
-        await callback.answer("⭐ Добавлено в избранное!")
+        elif data.startswith("route_"):
+            rid = int(data.split("_")[1])
+            conn = await get_conn()
+            r = await conn.execute_fetchall("SELECT lat, lon, name FROM restaurants WHERE id = ?", (rid,))
+            await conn.close()
+            if not r: return await callback.answer("Ресторан не найден")
+            rlat, rlon, rname = r[0]
+            conn2 = await get_conn()
+            c = await conn2.execute("SELECT lat, lon FROM users WHERE user_id = ?", (uid,))
+            uloc = await c.fetchone()
+            await conn2.close()
+            if uloc and uloc[0]:
+                url = f"https://yandex.by/maps/?rtext={uloc[0]},{uloc[1]}~{rlat},{rlon}&rtt=auto"
+            else:
+                url = f"https://yandex.by/maps/?mode=search&text={rlat},{rlon}"
+            await callback.message.answer(f"🗺️ Маршрут до *{rname}*:\n{url}", parse_mode="Markdown", disable_web_page_preview=True)
 
-    elif data.startswith("route_"):
-        rid = int(data.split("_")[1])
-        conn = await get_conn()
-        r = await conn.execute_fetchall("SELECT lat, lon, name FROM restaurants WHERE id = ?", (rid,))
-        await conn.close()
-        if not r: return await callback.answer("Ресторан не найден")
-        rlat, rlon, rname = r[0]
-        conn2 = await get_conn()
-        c = await conn2.execute("SELECT lat, lon FROM users WHERE user_id = ?", (uid,))
-        uloc = await c.fetchone()
-        await conn2.close()
-        if uloc and uloc[0]:
-            url = f"https://yandex.by/maps/?rtext={uloc[0]},{uloc[1]}~{rlat},{rlon}&rtt=auto"
-        else:
-            url = f"https://yandex.by/maps/?mode=search&text={rlat},{rlon}"
-        await callback.message.answer(f"🗺️ Маршрут до *{rname}*:\n{url}", parse_mode="Markdown", disable_web_page_preview=True)
+        elif data.startswith("reviews_"):
+            rid = int(data.split("_")[1])
+            conn = await get_conn()
+            rname = (await conn.execute_fetchall("SELECT name FROM restaurants WHERE id = ?", (rid,)))[0][0]
+            reviews = await conn.execute_fetchall(
+                "SELECT rating, text, created_at FROM reviews WHERE restaurant_id = ? ORDER BY id DESC LIMIT 10",
+                (rid,)
+            )
+            await conn.close()
+            if not reviews:
+                return await callback.message.answer(f"📝 У ресторана *{rname}* пока нет отзывов.", parse_mode="Markdown")
+            answer = f"📝 *Отзывы: {rname}*\n\n"
+            for rev in reviews:
+                rating, text, created = rev
+                stars = "⭐" * rating
+                answer += f"{stars}\n{text or 'Без текста'}\n_{created}_\n\n"
+            await callback.message.answer(answer, parse_mode="Markdown")
 
-    elif data.startswith("reviews_"):
-        rid = int(data.split("_")[1])
-        conn = await get_conn()
-        rname = (await conn.execute_fetchall("SELECT name FROM restaurants WHERE id = ?", (rid,)))[0][0]
-        reviews = await conn.execute_fetchall(
-            "SELECT rating, text, created_at FROM reviews WHERE restaurant_id = ? ORDER BY id DESC LIMIT 10",
-            (rid,)
-        )
-        await conn.close()
-        if not reviews:
-            return await callback.message.answer(f"📝 У ресторана *{rname}* пока нет отзывов.", parse_mode="Markdown")
-        answer = f"📝 *Отзывы: {rname}*\n\n"
-        for rev in reviews:
-            rating, text, created = rev
-            stars = "⭐" * rating
-            answer += f"{stars}\n{text or 'Без текста'}\n_{created}_\n\n"
-        await callback.message.answer(answer, parse_mode="Markdown")
-
-    elif data.startswith("rate_"):
-        parts = data.split("_")
-        rid = int(parts[1])
-        rating = int(parts[2])
-        # Сохраняем во временное хранилище (просто спрашиваем текст)
-        await callback.message.answer("Напиши текст отзыва (или отправь '-' чтобы пропустить):")
-        # Сохраним в памяти ожидание текста отзыва — используем FSM через простой словарь
-        pending_reviews[uid] = {"restaurant_id": rid, "rating": rating}
-        await callback.answer()
-
-# Хранилище ожидающих отзывов
-pending_reviews = {}
+        elif data.startswith("rate_"):
+            parts = data.split("_")
+            rid = int(parts[1])
+            rating = int(parts[2])
+            pending_reviews[uid] = {"restaurant_id": rid, "rating": rating}
+            await callback.message.answer("Напиши текст отзыва (или отправь '-' чтобы пропустить):")
+            await callback.answer()
+    except Exception:
+        logging.exception("callback error")
 
 @dp.message(F.text)
 async def review_text_handler(message: Message):
@@ -485,4 +476,24 @@ async def review_text_handler(message: Message):
         await conn.close()
         await message.answer("✅ Спасибо за отзыв!")
 
-# ==========
+# ========== АДМИН КОМАНДЫ ==========
+@dp.message(Command("admin"))
+async def admin_cmd(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await message.answer("🔧 Админ-панель", reply_markup=admin_kb())
+
+@dp.message(Command("add_restaurant"))
+async def add_restaurant_cmd(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        parts = message.text.split(maxsplit=1)[1].split("|")
+        if len(parts) < 5:
+            raise ValueError
+        name, cuisine, address, lat, lon = [p.strip() for p in parts[:5]]
+        phone = parts[5].strip() if len(parts) > 5 else ""
+        wh = parts[6].strip() if len(parts) > 6 else ""
+        avg = float(parts[7]) if len(parts) > 7 else 0
+        conn = await get_conn()
+ 
