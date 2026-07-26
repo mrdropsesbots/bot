@@ -15,8 +15,8 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_applicati
 from aiohttp import web
 
 # ========== НАСТРОЙКИ ПРЯМО В КОДЕ ==========
-BOT_TOKEN = "ВСТАВЬ_СЮДА_ТОКЕН_ОТ_BOTFATHER"  # ← замени
-ADMIN_ID = 123456789                            # ← замени на свой Telegram ID
+BOT_TOKEN = "8663406888:AAF3891CIjS3tASop0B092IlFN7Pato7DMU"  # ← замени
+ADMIN_ID = 5377564835                            # ← замени на свой Telegram ID
 
 # Render сам подставит хост, ничего менять не нужно
 RENDER_HOST = os.getenv("RENDER_EXTERNAL_HOSTNAME")
