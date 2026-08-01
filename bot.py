@@ -1,9 +1,7 @@
-import asyncio
 import logging
 import sys
-import os
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -14,12 +12,11 @@ from telegram.ext import (
     filters
 )
 
-from config import BOT_TOKEN, ADMIN_ID
-from database import db
+from config import BOT_TOKEN
 from handlers import (
     start, help_command, check_vin_start, process_vin,
     confirm_vin, my_checks, parts_estimate, pro_info,
-    buy_pro, main_menu, button_handler
+    buy_pro, main_menu
 )
 
 # Настройка логирования
@@ -33,7 +30,7 @@ logger = logging.getLogger(__name__)
 # Состояния
 WAITING_FOR_VIN = 1
 
-async def main():
+def main():
     # Создаём приложение
     application = Application.builder().token(BOT_TOKEN).build()
     
@@ -43,7 +40,8 @@ async def main():
         states={
             WAITING_FOR_VIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_vin)]
         },
-        fallbacks=[CommandHandler("cancel", lambda u, c: u.message.reply_text("Отменено"))]
+        fallbacks=[CommandHandler("cancel", lambda u, c: u.message.reply_text("Отменено"))],
+        per_message=False
     )
     
     # Обработчики
@@ -58,7 +56,9 @@ async def main():
     application.add_handler(CallbackQueryHandler(main_menu, pattern="^main_menu$"))
     
     logger.info("🚀 Бот запущен!")
-    await application.run_polling(allowed_updates=Update.ALL_TYPES)
+    
+    # Запускаем polling (блокирующий вызов, без asyncio.run)
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
