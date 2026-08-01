@@ -1,5 +1,6 @@
 import logging
 import sys
+import asyncio
 
 from telegram import Update
 from telegram.ext import (
@@ -19,7 +20,6 @@ from handlers import (
     buy_pro, main_menu
 )
 
-# Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -27,14 +27,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Состояния
 WAITING_FOR_VIN = 1
 
-def main():
-    # Создаём приложение
+async def main():
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Conversation handler для VIN
     vin_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(check_vin_start, pattern="^check_vin$")],
         states={
@@ -44,7 +41,6 @@ def main():
         per_message=False
     )
     
-    # Обработчики
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(vin_conv)
@@ -57,8 +53,14 @@ def main():
     
     logger.info("🚀 Бот запущен!")
     
-    # Запускаем polling (блокирующий вызов, без asyncio.run)
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    # Ручной запуск polling (совместимо с Python 3.11+)
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+    
+    # Держим бота запущенным
+    stop_event = asyncio.Event()
+    await stop_event.wait()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
