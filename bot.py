@@ -366,6 +366,7 @@ async def run_webhook():
         await app.updater.start_webhook(
             listen="0.0.0.0",
             port=int(os.getenv("PORT", 10000)),
+            url_path="webhook",  # <-- ИСПРАВЛЕНИЕ: слушаем путь /webhook
             webhook_url=render_url + "/webhook",
             drop_pending_updates=True
         )
@@ -377,9 +378,3 @@ async def run_webhook():
         await app.updater.start_polling()
         await app.updater.idle()
 
-def main():
-    logging.basicConfig(level=logging.INFO)
-    asyncio.run(run_webhook())
-
-if __name__ == "__main__":
-    main()
