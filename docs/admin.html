@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Админ-панель</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root { --bg:#0f0f0f; --card:#1c1c1e; --text:#fff; --hint:#636366; --accent:#0a84ff; --good:#34c759; --bad:#ff3b30; --warn:#ff9500; }
+    * { box-sizing:border-box; margin:0; padding:0; }
+    body { background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; padding:12px; padding-bottom:100px; }
+    .header { text-align:center; margin-bottom:16px; }
+    .header h1 { font-size:20px; }
+    .tabs { display:flex; gap:8px; margin-bottom:16px; overflow-x:auto; padding-bottom:4px; }
+    .tab { padding:10px 18px; border-radius:20px; border:none; background:var(--card); color:var(--hint); font-size:13px; font-weight:600; white-space:nowrap; cursor:pointer; }
+    .tab.active { background:var(--accent); color:#fff; }
+    .section { display:none; }
+    .section.active { display:block; }
+
+    /* Stats */
+    .stats-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:16px; }
+    .stat-card { background:var(--card); border-radius:16px; padding:16px; text-align:center; }
+    .stat-value { font-size:28px; font-weight:700; color:var(--accent); margin-bottom:4px; }
+    .stat-label { font-size:12px; color:var(--hint); }
+
+    /* Items */
+    .item-card { background:var(--card); border-radius:16px; overflow:hidden; margin-bottom:12px; }
+    .item-img { width:100%; aspect-ratio:16/9; object-fit:cover; background:#2c2c2e; }
+    .item-body { padding:14px; }
+    .item-title { font-size:15px; font-weight:600; margin-bottom:6px; }
+    .item-meta { font-size:13px; color:var(--hint); margin-bottom:8px; }
+    .item-desc { font-size:13px; color:#ccc; margin-bottom:12px; line-height:1.5; }
+    .item-actions { display:flex; gap:8px; }
+    .btn { flex:1; padding:10px 0; border:none; border-radius:12px; font-size:14px; font-weight:700; cursor:pointer; color:#fff; }
+    .btn-ok { background:var(--good); }
+    .btn-no { background:var(--bad); }
+    .btn-ban { background:var(--warn); }
+    .empty { text-align:center; color:var(--hint); padding:40px; }
+
+    /* Users */
+    .user-row { display:flex; justify-content:space-between; align-items:center; background:var(--card); border-radius:12px; padding:12px 14px; margin-bottom:8px; }
+    .user-name { font-size:14px; font-weight:600; }
+    .user-id { font-size:12px; color:var(--hint); }
+    .refresh-btn { position:fixed; bottom:20px; right:20px; width:50px; height:50px; border-radius:50%; border:none; background:var(--accent); color:#fff; font-size:22px; cursor:pointer; box-shadow:0 4px 20px rgba(10,132,255,0.4); z-index:50; }
+  </style>
+</head>
+<body>
+  <div class="header"><h1>⚙️ Админ-панель</h1></div>
+
+  <div class="tabs" id="tabs">
+    <button class="tab active" onclick="switchTab('stats')">📊 Статистика</button>
+    <button class="tab" onclick="switchTab('moderate')">🔥 Модерация</button>
+    <button class="tab" onclick="switchTab('users')">👤 Пользователи</button>
+  </div>
+
+  <!-- STATISTICS -->
+  <div class="section active" id="sec-stats">
+    <div class="stats-grid">
+      <div class="stat-card"><div class="stat-value" id="st-items">—</div><div class="stat-label">Всего объявлений</div></div>
+      <div class="stat-card"><div class="stat-value" id="st-pending">—</div><div class="stat-label">На модерации</div></div>
+      <div class="stat-card"><div class="stat-value" id="st-users">—</div><div class="stat-label">Пользователей</div></div>
+      <div class="stat-card"><div class="stat-value" id="st-today">—</div><div class="stat-label">Сегодня</div></div>
+    </div>
+  </div>
+
+  <!-- MODERATION -->
+  <div class="section" id="sec-moderate">
+    <div id="mod-list"></div>
+    <div class="empty" id="mod-empty" style="display:none">✅ Нет объявлений на модерации</div>
+  </div>
+
+  <!-- USERS -->
+  <div class="section" id="sec-users">
+    <div id="users-list"></div>
+  </div>
+
+  <button class="refresh-btn" onclick="loadAll()">↻</button>
+
+  <script>
+    // ========== CONFIG ==========
+    // ЗАМЕНИТЕ НА СВОИ ЗНАЧЕНИЯ ИЗ index.html
+    const SUPABASE_URL = 'https://ВАШ-ПРОЕКТ.supabase.co';
+    const SUPABASE_KEY = 'ВАШ-ANON-KEY';
+
+    const tg = window.Telegram.WebApp;
+    tg.ready(); tg.expand();
+    tg.setHeaderColor('#0f0f0f');
+
+    // ========== TABS ==========
+    function switchTab(name) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+      event.target.classList.add('active');
+      document.getElementById('sec-' + name).classList.add('active');
+    }
+
+    // ========== FETCH HELPERS ==========
+    async function sbCount(path, query='') {
+      const url = `${SUPABASE_URL}/rest/v1/${path}?${query}&limit=1`;
+      const res = await fetch(url, { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, Prefer: 'count=exact' } });
+      const range = res.headers.get('content-range') || '0-0/0';
+      return parseInt(range.split('/')[1]) || 0;
+    }
+    async function sbGet(path) {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+        headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
+      });
+      if (!res.ok) return [];
+      return res.json();
+    }
+
+    // ========== LOAD STATS ==========
+    async function loadStats() {
+      const [items, pending, users] = await Promise.all([
+        sbCount('items'),
+        sbCount('items', 'status=eq.pending'),
+        sbCount('profiles')
+      ]);
+      const today = new Date().toISOString().split('T')[0];
+      const todayItems = await sbCount('items', `created_at=gte.${today}`);
+      document.getElementById('st-items').innerText = items;
+      document.getElementById('st-pending').innerText = pending;
+      document.getElementById('st-users').innerText = users;
+      document.getElementById('st-today').innerText = todayItems;
+    }
+
+    // ========== LOAD MODERATION ==========
+    async function loadModeration() {
+      const list = document.getElementById('mod-list');
+      const empty = document.getElementById('mod-empty');
+      list.innerHTML = '';
+      const items = await sbGet('items?status=eq.pending&select=*,profiles(username,telegram_id)&order=created_at.asc');
+      if (!items || items.length === 0) {
+        empty.style.display = 'block';
+        return;
+      }
+      empty.style.display = 'none';
+      items.forEach(item => {
+        const prof = item.profiles || {};
+        const img = (item.photos && item.photos.length) ? `<img class="item-img" src="${item.photos[0]}" loading="lazy">` : '';
+        list.innerHTML += `
+          <div class="item-card">
+            ${img}
+            <div class="item-body">
+              <div class="item-title">${item.title}</div>
+              <div class="item-meta">💰 ${item.price} BYN · 🏙 ${item.city} · 👤 @${prof.username || prof.telegram_id || '—'}</div>
+              <div class="item-desc">${item.description || 'Нет описания'}</div>
+              <div class="item-actions">
+                <button class="btn btn-ok" onclick="sendAction('admin_approve','${item.id}')">✅ Одобрить</button>
+                <button class="btn btn-no" onclick="sendAction('admin_reject','${item.id}')">❌ Отклонить</button>
+                <button class="btn btn-ban" onclick="sendBan('${prof.telegram_id}')">🚫 Бан</button>
+              </div>
+            </div>
+          </div>
+        `;
+      });
+    }
+
+    // ========== LOAD USERS ==========
+    async function loadUsers() {
+      const list = document.getElementById('users-list');
+      list.innerHTML = '';
+      const users = await sbGet('profiles?order=created_at.desc&limit=20');
+      if (!users || users.length === 0) {
+        list.innerHTML = '<div class="empty">Нет пользователей</div>';
+        return;
+      }
+      users.forEach(u => {
+        list.innerHTML += `
+          <div class="user-row">
+            <div>
+              <div class="user-name">@${u.username || '—'} — ${u.full_name || 'Без имени'}</div>
+              <div class="user-id">ID: ${u.telegram_id} · ${u.city || '—'}</div>
+            </div>
+          </div>
+        `;
+      });
+    }
+
+    // ========== ACTIONS ==========
+    function sendAction(action, itemId) {
+      tg.sendData(JSON.stringify({ action: action, item_id: itemId }));
+    }
+    function sendBan(tgId) {
+      if (!tgId) { alert('Нет ID пользователя'); return; }
+      tg.sendData(JSON.stringify({ action: 'admin_ban', tg_id: tgId }));
+    }
+
+    // ========== INIT ==========
+    async function loadAll() {
+      await loadStats();
+      await loadModeration();
+      await loadUsers();
+    }
+    loadAll();
+  </script>
+</body>
+</html>
