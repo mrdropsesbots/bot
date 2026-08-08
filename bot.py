@@ -2,40 +2,72 @@ import os
 import json
 import logging
 from datetime import datetime
-from aiohttp import web
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, MenuButtonWebApp
-from supabase import create_client, Client
+import aiohttp
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, MenuButtonWebApp
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 # ================== CONFIG ==================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")  # service_role
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 WEBAPP_URL = os.getenv("WEBAPP_URL")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+HEADERS = {
+    "apikey": SUPABASE_KEY,
+    "Authorization": f"Bearer {SUPABASE_KEY}",
+    "Content-Type": "application/json"
+}
 
-# ================== USER COMMANDS ==================
+# ================== SUPABASE HELPERS ==================
+async def sb_get(path: str):
+    async with aiohttp.ClientSession() as session:
+        url = f"{SUPABASE_URL}/rest/v1/{path}"
+        async with session.get(url, headers=HEADERS) as resp:
+            return await resp.json()
 
-@dp.message(Command("start"))
-async def start(message: types.Message):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛍 Открыть барахолку", web_app=WebAppInfo(url=WEBAPP_URL))],
-        [InlineKeyboardButton(text="❓ Как продать", callback_data="help")]
-    ])
-    await message.answer(
-        "Привет! Здесь можно продать или купить вещи в Беларуси.\n\n"
-        "Нажмите кнопку ниже 👇",
+async def sb_post(path: str, data: dict):
+    async with aiohttp.ClientSession() as session:
+        url = f"{SUPABASE_URL}/rest/v1/{path}"
+        async with session.post(url, headers=HEADERS, json=data) as resp:
+            return await resp.json()
+
+async def sb_patch(path: str, data: dict):
+    async with aiohttp.ClientSession() as session:
+        url = f"{SUPABASE_URL}/rest/v1/{path}"
+        async with session.patch(url, headers=HEADERS, json=data) as resp:
+            return await resp.json()
+
+async def sb_count(path: str, query: str = ""):
+    async with aiohttp.ClientSession() as session:
+        url = f"{SUPABASE_URL}/rest/v1/{path}?{query}&limit=1"
+        h = {**HEADERS, "Prefer": "count=exact"}
+        async with session.get(url, headers=h) as resp:
+            range_header = resp.headers.get("content-range", "0-0/0")
+            return int(range_header.split("/")[-1])
+
+# ================== POST INIT ==================
+async def post_init(app: Application):
+    await app.bot.set_chat_menu_button(
+        menu_button=MenuButtonWebApp(text="Барахолка", web_app=WebAppInfo(url=WEBAPP_URL))
+    )
+
+# ================== USER HANDLERS ==================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🛍 Открыть барахолку", web_app=WebAppInfo(url=WEBAPP_URL))
+    ], [
+        InlineKeyboardButton("❓ Как продать", callback_data="help")
+    ]])
+    await update.message.reply_text(
+        "Привет! Здесь можно продать или купить вещи в Беларуси.\n\nНажмите кнопку ниже 👇",
         reply_markup=kb
     )
 
-@dp.callback_query(F.data == "help")
-async def help_cb(call: types.CallbackQuery):
-    await call.message.answer(
+async def help_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.message.reply_text(
         "1. Нажмите «Открыть барахолку»\n"
         "2. Нажмите ➕ Продать внизу\n"
         "3. Заполните форму и прикрепите фото\n"
@@ -43,9 +75,8 @@ async def help_cb(call: types.CallbackQuery):
         "VIP-размещение — /vip"
     )
 
-@dp.message(Command("vip"))
-async def vip(message: types.Message):
-    await message.answer(
+async def vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
         "💎 <b>VIP-объявление</b>\n\n"
         "Ваш товар будет в начале ленты с оранжевой меткой.\n"
         "Стоимость: 5 BYN / 7 дней\n\n"
@@ -54,44 +85,44 @@ async def vip(message: types.Message):
     )
 
 # ================== WEB APP DATA ==================
-
-@dp.message(F.web_app_data)
-async def web_data(message: types.Message):
-    data = json.loads(message.web_app_data.data)
+async def web_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.web_app_data:
+        return
+    
+    data = json.loads(update.message.web_app_data.data)
     action = data.get("action")
-    user = message.from_user
+    user = update.effective_user
 
     if action == "create_item":
         title = data.get("title", "").strip()
         desc = data.get("description", "").strip()
         price = data.get("price", 0)
 
-        # Auto-moderation
         if len(title) < 3:
-            return await message.answer("❌ Слишком короткое название. Минимум 3 символа.")
+            return await update.message.reply_text("❌ Слишком короткое название. Минимум 3 символа.")
         if price > 100000:
-            return await message.answer("❌ Цена слишком высокая. Максимум 100 000 BYN.")
+            return await update.message.reply_text("❌ Цена слишком высокая. Максимум 100 000 BYN.")
         
-        banned = ["кокаин", "героин", "оружие", "паспорт", "права", "диплом", "наркотик", "пистолет", "травмат", "макет", "куплю почку"]
+        banned = ["кокаин", "героин", "оружие", "паспорт", "права", "диплом", "наркотик", "пистолет", "травмат", "куплю почку"]
         if any(word in (title + " " + desc).lower() for word in banned):
-            return await message.answer("❌ Объявление содержит запрещённый товар.")
+            return await update.message.reply_text("❌ Объявление содержит запрещённый товар.")
         if "http" in title or "t.me/" in title or "@" in title:
-            return await message.answer("❌ Нельзя размещать ссылки и контакты в названии.")
+            return await update.message.reply_text("❌ Нельзя размещать ссылки в названии.")
 
         # Profile
-        prof = supabase.table("profiles").select("*").eq("telegram_id", user.id).execute()
-        if not prof.data:
-            supabase.table("profiles").insert({
+        profs = await sb_get(f"profiles?telegram_id=eq.{user.id}")
+        if not profs:
+            await sb_post("profiles", {
                 "telegram_id": user.id,
                 "username": user.username,
                 "full_name": user.full_name or "Без имени",
                 "city": data.get("city", "Минск")
-            }).execute()
-            prof = supabase.table("profiles").select("*").eq("telegram_id", user.id).execute()
-        profile_id = prof.data[0]["id"]
+            })
+            profs = await sb_get(f"profiles?telegram_id=eq.{user.id}")
+        profile_id = profs[0]["id"]
 
         # Insert item
-        result = supabase.table("items").insert({
+        result = await sb_post("items", {
             "profile_id": profile_id,
             "category_id": data["category_id"],
             "title": title,
@@ -102,51 +133,50 @@ async def web_data(message: types.Message):
             "photos": data.get("photos", []),
             "is_active": False,
             "status": "pending"
-        }).execute()
+        })
 
-        await message.answer(
+        await update.message.reply_text(
             "⏳ Объявление отправлено на модерацию.\n"
-            "Обычно проверка занимает 10–30 минут.\n"
-            "Мы напишем, когда всё будет готово."
+            "Обычно проверка занимает 10–30 минут."
         )
 
-        if ADMIN_ID and result.data:
-            await notify_admin(result.data[0]["id"], data, user)
+        if ADMIN_ID and result:
+            await notify_admin(context, result[0]["id"], data, user)
 
     elif action == "interest":
         item_id = data["item_id"]
-        item = supabase.table("items").select("*,profiles(telegram_id,username)").eq("id", item_id).single().execute()
-        if not item.data:
-            return await message.answer("❌ Товар не найден")
+        items = await sb_get(f"items?id=eq.{item_id}&select=*,profiles(username,telegram_id)")
+        if not items:
+            return await update.message.reply_text("❌ Товар не найден")
+        
+        item = items[0]
+        seller_tg = item["profiles"]["telegram_id"]
 
-        seller_tg = item.data["profiles"]["telegram_id"]
-
-        supabase.table("interests").insert({
+        await sb_post("interests", {
             "item_id": item_id,
             "buyer_tg_id": user.id,
             "buyer_username": user.username,
             "message": data.get("message", "")
-        }).execute()
+        })
 
-        await bot.send_message(
+        await context.bot.send_message(
             seller_tg,
             f"📩 <b>Новый покупатель!</b>\n\n"
-            f"<b>Товар:</b> {item.data['title']}\n"
-            f"<b>Цена:</b> {item.data['price']} BYN\n"
+            f"<b>Товар:</b> {item['title']}\n"
+            f"<b>Цена:</b> {item['price']} BYN\n"
             f"<b>Покупатель:</b> @{user.username or user.id}\n\n"
             f"Напишите ему первым!",
             parse_mode="HTML"
         )
-        await message.answer("✅ Продавец уведомлён! Он свяжется с вами.")
+        await update.message.reply_text("✅ Продавец уведомлён! Он свяжется с вами.")
 
-async def notify_admin(item_id, data, user):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve:{item_id}"),
-            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject:{item_id}")
-        ],
-        [InlineKeyboardButton(text="🚫 Забанить", callback_data=f"ban:{user.id}")]
-    ])
+async def notify_admin(context: ContextTypes.DEFAULT_TYPE, item_id: str, data: dict, user):
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Одобрить", callback_data=f"approve:{item_id}"),
+        InlineKeyboardButton("❌ Отклонить", callback_data=f"reject:{item_id}")
+    ], [
+        InlineKeyboardButton("🚫 Забанить", callback_data=f"ban:{user.id}")
+    ]])
 
     text = (
         f"🆕 <b>Новое на модерацию</b>\n\n"
@@ -160,77 +190,62 @@ async def notify_admin(item_id, data, user):
     photos = data.get("photos", [])
     try:
         if photos:
-            await bot.send_photo(ADMIN_ID, photos[0], caption=text, reply_markup=kb, parse_mode="HTML")
+            await context.bot.send_photo(ADMIN_ID, photos[0], caption=text, reply_markup=kb, parse_mode="HTML")
         else:
-            await bot.send_message(ADMIN_ID, text, reply_markup=kb, parse_mode="HTML")
+            await context.bot.send_message(ADMIN_ID, text, reply_markup=kb, parse_mode="HTML")
     except Exception as e:
         logging.error(f"Admin notify error: {e}")
 
 # ================== ADMIN COMMANDS ==================
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return await update.message.reply_text("⛔️ Только для админа.")
 
-@dp.message(Command("admin"))
-async def admin_panel(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return await message.answer("⛔️ Только для админа.")
-
-    total_users = supabase.table("profiles").select("*", count="exact", head=True).execute()
-    total_items = supabase.table("items").select("*", count="exact", head=True).execute()
-    pending = supabase.table("items").select("*", count="exact", head=True).eq("status", "pending").execute()
-    approved = supabase.table("items").select("*", count="exact", head=True).eq("status", "approved").execute()
-    rejected = supabase.table("items").select("*", count="exact", head=True).eq("status", "rejected").execute()
+    total_users = await sb_count("profiles")
+    total_items = await sb_count("items")
+    pending = await sb_count("items", "status=eq.pending")
+    approved = await sb_count("items", "status=eq.approved")
+    rejected = await sb_count("items", "status=eq.rejected")
 
     today = datetime.now().strftime("%Y-%m-%d")
-    today_items = supabase.table("items").select("*", count="exact", head=True).gte("created_at", today).execute()
-    today_users = supabase.table("profiles").select("*", count="exact", head=True).gte("created_at", today).execute()
+    today_items = await sb_count("items", f"created_at=gte.{today}")
+    today_users = await sb_count("profiles", f"created_at=gte.{today}")
 
     text = (
         f"📊 <b>Админ-панель</b>\n\n"
-        f"👤 Пользователи: {total_users.count} (сегодня: +{today_users.count})\n"
-        f"📦 Объявления: {total_items.count}\n"
-        f"   🔥 На модерации: {pending.count}\n"
-        f"   ✅ Одобрено: {approved.count}\n"
-        f"   ❌ Отклонено: {rejected.count}\n"
-        f"   📅 Сегодня: +{today_items.count}\n\n"
+        f"👤 Пользователи: {total_users} (сегодня: +{today_users})\n"
+        f"📦 Объявления: {total_items}\n"
+        f"   🔥 На модерации: {pending}\n"
+        f"   ✅ Одобрено: {approved}\n"
+        f"   ❌ Отклонено: {rejected}\n"
+        f"   📅 Сегодня: +{today_items}\n\n"
         f"/moderate — модерация\n"
         f"/users — последние юзеры"
     )
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔥 На модерации", callback_data="admin:moderate")],
-        [InlineKeyboardButton(text="♻️ Обновить", callback_data="admin:refresh")]
-    ])
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🔥 На модерации", callback_data="admin:moderate"),
+        InlineKeyboardButton("♻️ Обновить", callback_data="admin:refresh")
+    ]])
 
-    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+    await update.message.reply_text(text, reply_markup=kb, parse_mode="HTML")
 
-@dp.callback_query(F.data == "admin:refresh")
-async def admin_refresh(call: types.CallbackQuery):
-    await call.answer("Обновлено")
-    await admin_panel(call.message)
+async def moderate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return await update.message.reply_text("⛔️ Только для админа.")
 
-@dp.callback_query(F.data == "admin:moderate")
-async def admin_moderate_btn(call: types.CallbackQuery):
-    await call.answer()
-    await moderate_cmd(call.message)
+    pending = await sb_get("items?status=eq.pending&select=*,profiles(username,telegram_id)&order=created_at.asc&limit=5")
 
-@dp.message(Command("moderate"))
-async def moderate_cmd(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return await message.answer("⛔️ Только для админа.")
+    if not pending:
+        return await update.message.reply_text("✅ Нет объявлений на модерации.")
 
-    pending = supabase.table("items").select("*,profiles(username,telegram_id)").eq("status", "pending").order("created_at", desc=False).limit(5).execute()
+    await update.message.reply_text(f"🔥 <b>На модерации: {len(pending)}</b>", parse_mode="HTML")
 
-    if not pending.data:
-        return await message.answer("✅ Нет объявлений на модерации.")
-
-    await message.answer(f"🔥 <b>На модерации: {len(pending.data)}</b>", parse_mode="HTML")
-
-    for item in pending.data:
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve:{item['id']}"),
-                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject:{item['id']}")
-            ]
-        ])
+    for item in pending:
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Одобрить", callback_data=f"approve:{item['id']}"),
+            InlineKeyboardButton("❌ Отклонить", callback_data=f"reject:{item['id']}")
+        ]])
 
         text = (
             f"📦 <b>{item['title']}</b>\n"
@@ -240,112 +255,124 @@ async def moderate_cmd(message: types.Message):
         )
 
         if item.get('photos') and len(item['photos']) > 0:
-            await message.answer_photo(item['photos'][0], caption=text, reply_markup=kb, parse_mode="HTML")
+            await update.message.reply_photo(item['photos'][0], caption=text, reply_markup=kb, parse_mode="HTML")
         else:
-            await message.answer(text, reply_markup=kb, parse_mode="HTML")
+            await update.message.reply_text(text, reply_markup=kb, parse_mode="HTML")
 
-@dp.message(Command("users"))
-async def users_cmd(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return await message.answer("⛔️ Только для админа.")
+async def users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return await update.message.reply_text("⛔️ Только для админа.")
 
-    users = supabase.table("profiles").select("*").order("created_at", desc=True).limit(10).execute()
-    if not users.data:
-        return await message.answer("Нет пользователей.")
+    users = await sb_get("profiles?order=created_at.desc&limit=10")
+    if not users:
+        return await update.message.reply_text("Нет пользователей.")
 
     text = "👤 <b>Последние 10 пользователей:</b>\n\n"
-    for u in users.data:
+    for u in users:
         text += f"• @{u.get('username') or '—'} — {u.get('full_name', 'Без имени')} — {u['city']} — <code>{u['telegram_id']}</code>\n"
 
-    await message.answer(text, parse_mode="HTML")
+    await update.message.reply_text(text, parse_mode="HTML")
 
-# ================== MODERATION CALLBACKS ==================
+# ================== CALLBACKS ==================
+async def approve_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID:
+        return await query.answer("Нет доступа", show_alert=True)
 
-@dp.callback_query(F.data.startswith("approve:"))
-async def approve_item(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
-        return await call.answer("Нет доступа", show_alert=True)
+    item_id = query.data.split(":")[1]
+    await sb_patch(f"items?id=eq.{item_id}", {"status": "approved", "is_active": True})
 
-    item_id = call.data.split(":")[1]
-    supabase.table("items").update({"status": "approved", "is_active": True}).eq("id", item_id).execute()
-
-    item = supabase.table("items").select("*,profiles(telegram_id)").eq("id", item_id).single().execute()
-    if item.data:
-        await bot.send_message(
-            item.data["profiles"]["telegram_id"],
-            f"✅ Ваше объявление одобрено и опубликовано!\n\n"
-            f"📦 {item.data['title']}\n"
-            f"💰 {item.data['price']} BYN"
+    items = await sb_get(f"items?id=eq.{item_id}&select=*,profiles(telegram_id)")
+    if items:
+        await context.bot.send_message(
+            items[0]["profiles"]["telegram_id"],
+            f"✅ Ваше объявление одобрено!\n\n📦 {items[0]['title']}\n💰 {items[0]['price']} BYN"
         )
 
-    if call.message.photo:
-        await call.message.edit_caption(caption=(call.message.caption or "") + "\n\n✅ ОДОБРЕНО", reply_markup=None)
+    old = query.message.caption or query.message.text or ""
+    new_text = old + "\n\n✅ ОДОБРЕНО"
+    if query.message.photo:
+        await query.edit_message_caption(caption=new_text, reply_markup=None)
     else:
-        await call.message.edit_text((call.message.text or "") + "\n\n✅ ОДОБРЕНО", reply_markup=None)
-    await call.answer("Одобрено")
+        await query.edit_message_text(text=new_text, reply_markup=None)
+    await query.answer("Одобрено")
 
-@dp.callback_query(F.data.startswith("reject:"))
-async def reject_item(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
-        return await call.answer("Нет доступа", show_alert=True)
+async def reject_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID:
+        return await query.answer("Нет доступа", show_alert=True)
 
-    item_id = call.data.split(":")[1]
-    supabase.table("items").update({"status": "rejected", "is_active": False}).eq("id", item_id).execute()
+    item_id = query.data.split(":")[1]
+    await sb_patch(f"items?id=eq.{item_id}", {"status": "rejected", "is_active": False})
 
-    item = supabase.table("items").select("*,profiles(telegram_id)").eq("id", item_id).single().execute()
-    if item.data:
-        await bot.send_message(
-            item.data["profiles"]["telegram_id"],
-            "❌ Ваше объявление отклонено.\n\n"
-            "Возможные причины:\n"
-            "• Запрещённый товар\n"
-            "• Некорректное описание\n"
-            "• Отсутствие фото\n\n"
-            "Попробуйте разместить снова."
+    items = await sb_get(f"items?id=eq.{item_id}&select=*,profiles(telegram_id)")
+    if items:
+        await context.bot.send_message(
+            items[0]["profiles"]["telegram_id"],
+            "❌ Ваше объявление отклонено.\n\nВозможные причины: запрещённый товар, некорректное описание, отсутствие фото."
         )
 
-    if call.message.photo:
-        await call.message.edit_caption(caption=(call.message.caption or "") + "\n\n❌ ОТКЛОНЕНО", reply_markup=None)
+    old = query.message.caption or query.message.text or ""
+    new_text = old + "\n\n❌ ОТКЛОНЕНО"
+    if query.message.photo:
+        await query.edit_message_caption(caption=new_text, reply_markup=None)
     else:
-        await call.message.edit_text((call.message.text or "") + "\n\n❌ ОТКЛОНЕНО", reply_markup=None)
-    await call.answer("Отклонено")
+        await query.edit_message_text(text=new_text, reply_markup=None)
+    await query.answer("Отклонено")
 
-@dp.callback_query(F.data.startswith("ban:"))
-async def ban_user(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
-        return await call.answer("Нет доступа", show_alert=True)
+async def ban_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID:
+        return await query.answer("Нет доступа", show_alert=True)
 
-    tg_id = call.data.split(":")[1]
-    await call.message.answer(
-        f"🚫 Пользователь <code>{tg_id}</code> в бан-листе.\n"
-        f"Для полной блокировки добавьте поле banned в таблицу profiles.",
+    tg_id = query.data.split(":")[1]
+    await query.message.reply_text(
+        f"🚫 Пользователь <code>{tg_id}</code> в бан-листе.",
         parse_mode="HTML"
     )
-    await call.answer("Забанен")
+    await query.answer("Забанен")
 
-# ================== WEBHOOK SERVER ==================
+async def admin_refresh_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer("Обновлено")
+    await admin_panel(update, context)
 
-async def webhook_handler(request):
-    update = types.Update(**(await request.json()))
-    await dp.feed_webhook_update(bot, update)
-    return web.Response()
+async def admin_moderate_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await moderate_cmd(update, context)
 
-async def on_startup(app):
-    url = os.getenv("RENDER_EXTERNAL_URL", "") + "/webhook"
-    if url.startswith("http"):
-        await bot.set_webhook(url)
-        await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text="Барахолка", web_app=WebAppInfo(url=WEBAPP_URL)))
-
-async def on_shutdown(app):
-    await bot.session.close()
-
+# ================== MAIN ==================
 def main():
-    app = web.Application()
-    app.router.add_post("/webhook", webhook_handler)
-    app.on_startup.append(on_startup)
-    app.on_shutdown.append(on_shutdown)
-    web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+    logging.basicConfig(level=logging.INFO)
+
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+
+    # Handlers
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("vip", vip))
+    app.add_handler(CommandHandler("admin", admin_panel))
+    app.add_handler(CommandHandler("moderate", moderate_cmd))
+    app.add_handler(CommandHandler("users", users_cmd))
+    app.add_handler(CallbackQueryHandler(help_cb, pattern="^help$"))
+    app.add_handler(CallbackQueryHandler(admin_refresh_cb, pattern="^admin:refresh$"))
+    app.add_handler(CallbackQueryHandler(admin_moderate_cb, pattern="^admin:moderate$"))
+    app.add_handler(CallbackQueryHandler(approve_cb, pattern="^approve:"))
+    app.add_handler(CallbackQueryHandler(reject_cb, pattern="^reject:"))
+    app.add_handler(CallbackQueryHandler(ban_cb, pattern="^ban:"))
+    app.add_handler(MessageHandler(filters.ALL, web_data))
+
+    # Webhook
+    render_url = os.getenv("RENDER_EXTERNAL_URL", "")
+    if render_url.startswith("http"):
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=int(os.getenv("PORT", 10000)),
+            webhook_url=render_url + "/webhook",
+            drop_pending_updates=True
+        )
+    else:
+        app.run_polling()
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
     main()
