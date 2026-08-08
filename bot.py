@@ -90,6 +90,31 @@ async def vip(message: types.Message):
     )
 
 # ================== WEB APP DATA ==================
+# Найти профиль
+profile_url = f"{SUPABASE_URL}/rest/v1/profiles?telegram_id=eq.{user.id}"
+async with session.get(profile_url, headers=headers) as resp:
+    profiles = await resp.json()
+
+# Если нет — создать
+if not profiles:
+    new_profile = {
+        "telegram_id": user.id,
+        "username": user.username,
+        "full_name": user.full_name or user.username or "User"
+    }
+    async with session.post(
+        f"{SUPABASE_URL}/rest/v1/profiles",
+        headers=headers,
+        json=new_profile
+    ) as resp:
+        profiles = await resp.json()
+
+if not profiles:
+    await message.answer("❌ Не удалось создать профиль")
+    return
+
+profile_id = profiles[0]["id"]
+
 @dp.message_handler(content_types=types.ContentType.WEB_APP_DATA)
 async def web_data(message: types.Message):
     data = json.loads(message.web_app_data.data)
