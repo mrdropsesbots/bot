@@ -175,7 +175,6 @@
     function initTabs(){const tabsEl=document.getElementById('catTabs');let html='<button class="tab active" data-cat="null">Все</button>';categories.forEach(c=>{html+=`<button class="tab" data-cat="${c.id}">${c.icon} ${c.name}</button>`});tabsEl.innerHTML=html;tabsEl.querySelectorAll('.tab').forEach(btn=>{btn.addEventListener('click',function(){const catId=this.getAttribute('data-cat');activeCat=catId==='null'?null:parseInt(catId);tabsEl.querySelectorAll('.tab').forEach(b=>b.classList.remove('active'));this.classList.add('active');render()})});document.getElementById('fCat').innerHTML=categories.map(c=>`<option value="${c.id}">${c.icon} ${c.name}</option>`).join('')}
     document.getElementById('fPhotos').addEventListener('change',async(e)=>{const files=Array.from(e.target.files).slice(0,5);uploadedPhotos=[];const prev=document.getElementById('photoPreview');prev.innerHTML='';showToast(`Загрузка ${files.length} фото...`);for(const file of files){const url=await uploadPhoto(file);if(url){uploadedPhotos.push(url);prev.innerHTML+=`<img src="${url}">`}}if(uploadedPhotos.length>0){showToast(`✅ Загружено ${uploadedPhotos.length} фото`,'success')}});
 
-    // ===== ИСПРАВЛЕННАЯ ЗАГРУЗКА ФОТО =====
     async function uploadPhoto(file) {
       try {
         const filename = `${Date.now()}_${Math.random().toString(36).slice(2)}_${file.name}`;
@@ -183,7 +182,7 @@
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${SUPABASE_KEY}`,
-            'apikey': SUPABASE_KEY   // ← БЕЗ ЭТОГО БУДЕТ 400
+            'apikey': SUPABASE_KEY
           },
           body: file
         });
@@ -230,4 +229,7 @@
     document.getElementById('cityFilter').addEventListener('change',render);
     document.getElementById('condFilter').addEventListener('change',render);
     initTabs();
-   
+    loadItems();
+  </script>
+</body>
+</html>
