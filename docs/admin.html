@@ -16,14 +16,10 @@
     .tab.active { background:var(--accent); color:#fff; }
     .section { display:none; }
     .section.active { display:block; }
-
-    /* Stats */
     .stats-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:16px; }
     .stat-card { background:var(--card); border-radius:16px; padding:16px; text-align:center; }
     .stat-value { font-size:28px; font-weight:700; color:var(--accent); margin-bottom:4px; }
     .stat-label { font-size:12px; color:var(--hint); }
-
-    /* Items */
     .item-card { background:var(--card); border-radius:16px; overflow:hidden; margin-bottom:12px; }
     .item-img { width:100%; aspect-ratio:16/9; object-fit:cover; background:#2c2c2e; }
     .item-body { padding:14px; }
@@ -36,15 +32,18 @@
     .btn-no { background:var(--bad); }
     .btn-ban { background:var(--warn); }
     .empty { text-align:center; color:var(--hint); padding:40px; }
-
-    /* Users */
     .user-row { display:flex; justify-content:space-between; align-items:center; background:var(--card); border-radius:12px; padding:12px 14px; margin-bottom:8px; }
     .user-name { font-size:14px; font-weight:600; }
     .user-id { font-size:12px; color:var(--hint); }
     .refresh-btn { position:fixed; bottom:20px; right:20px; width:50px; height:50px; border-radius:50%; border:none; background:var(--accent); color:#fff; font-size:22px; cursor:pointer; box-shadow:0 4px 20px rgba(10,132,255,0.4); z-index:50; }
+    .toast { position:fixed; top:20px; left:50%; transform:translateX(-50%); background:var(--card); color:#fff; padding:12px 20px; border-radius:12px; font-size:14px; z-index:200; display:none; }
+    .toast.error { background:var(--bad); }
+    .toast.success { background:var(--good); }
   </style>
 </head>
 <body>
+  <div class="toast" id="toast"></div>
+
   <div class="header"><h1>⚙️ Админ-панель</h1></div>
 
   <div class="tabs" id="tabs">
@@ -53,7 +52,6 @@
     <button class="tab" onclick="switchTab('users')">👤 Пользователи</button>
   </div>
 
-  <!-- STATISTICS -->
   <div class="section active" id="sec-stats">
     <div class="stats-grid">
       <div class="stat-card"><div class="stat-value" id="st-items">—</div><div class="stat-label">Всего объявлений</div></div>
@@ -63,13 +61,11 @@
     </div>
   </div>
 
-  <!-- MODERATION -->
   <div class="section" id="sec-moderate">
     <div id="mod-list"></div>
     <div class="empty" id="mod-empty" style="display:none">✅ Нет объявлений на модерации</div>
   </div>
 
-  <!-- USERS -->
   <div class="section" id="sec-users">
     <div id="users-list"></div>
   </div>
@@ -77,8 +73,7 @@
   <button class="refresh-btn" onclick="loadAll()">↻</button>
 
   <script>
-    // ========== CONFIG ==========
-    // ЗАМЕНИТЕ НА СВОИ ЗНАЧЕНИЯ ИЗ index.html
+    // ========== CONFIG (те же, что в index.html) ==========
     const SUPABASE_URL = 'https://pfutmevbueqbfnhkwrrl.supabase.co';
     const SUPABASE_KEY = 'sb_publishable_XbKZidr33cbRdwtqKD0zBw_Rsk-tGz3';
 
@@ -86,7 +81,14 @@
     tg.ready(); tg.expand();
     tg.setHeaderColor('#0f0f0f');
 
-    // ========== TABS ==========
+    function showToast(msg, type='') {
+      const t = document.getElementById('toast');
+      t.innerText = msg;
+      t.className = 'toast ' + type;
+      t.style.display = 'block';
+      setTimeout(() => t.style.display = 'none', 4000);
+    }
+
     function switchTab(name) {
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
       document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
@@ -94,7 +96,6 @@
       document.getElementById('sec-' + name).classList.add('active');
     }
 
-    // ========== FETCH HELPERS ==========
     async function sbCount(path, query='') {
       const url = `${SUPABASE_URL}/rest/v1/${path}?${query}&limit=1`;
       const res = await fetch(url, { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, Prefer: 'count=exact' } });
@@ -105,16 +106,13 @@
       const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
         headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
       });
-      if (!res.ok) return [];
+      if (!res.ok) { console.error('sbGet error', res.status, path); return []; }
       return res.json();
     }
 
-    // ========== LOAD STATS ==========
     async function loadStats() {
       const [items, pending, users] = await Promise.all([
-        sbCount('items'),
-        sbCount('items', 'status=eq.pending'),
-        sbCount('profiles')
+        sbCount('items'), sbCount('items', 'status=eq.pending'), sbCount('profiles')
       ]);
       const today = new Date().toISOString().split('T')[0];
       const todayItems = await sbCount('items', `created_at=gte.${today}`);
@@ -124,16 +122,12 @@
       document.getElementById('st-today').innerText = todayItems;
     }
 
-    // ========== LOAD MODERATION ==========
     async function loadModeration() {
       const list = document.getElementById('mod-list');
       const empty = document.getElementById('mod-empty');
       list.innerHTML = '';
       const items = await sbGet('items?status=eq.pending&select=*,profiles(username,telegram_id)&order=created_at.asc');
-      if (!items || items.length === 0) {
-        empty.style.display = 'block';
-        return;
-      }
+      if (!items || items.length === 0) { empty.style.display = 'block'; return; }
       empty.style.display = 'none';
       items.forEach(item => {
         const prof = item.profiles || {};
@@ -151,20 +145,15 @@
                 <button class="btn btn-ban" onclick="sendBan('${prof.telegram_id}')">🚫 Бан</button>
               </div>
             </div>
-          </div>
-        `;
+          </div>`;
       });
     }
 
-    // ========== LOAD USERS ==========
     async function loadUsers() {
       const list = document.getElementById('users-list');
       list.innerHTML = '';
       const users = await sbGet('profiles?order=created_at.desc&limit=20');
-      if (!users || users.length === 0) {
-        list.innerHTML = '<div class="empty">Нет пользователей</div>';
-        return;
-      }
+      if (!users || users.length === 0) { list.innerHTML = '<div class="empty">Нет пользователей</div>'; return; }
       users.forEach(u => {
         list.innerHTML += `
           <div class="user-row">
@@ -172,21 +161,22 @@
               <div class="user-name">@${u.username || '—'} — ${u.full_name || 'Без имени'}</div>
               <div class="user-id">ID: ${u.telegram_id} · ${u.city || '—'}</div>
             </div>
-          </div>
-        `;
+          </div>`;
       });
     }
 
-    // ========== ACTIONS ==========
     function sendAction(action, itemId) {
+      console.log('Admin action:', action, itemId);
       tg.sendData(JSON.stringify({ action: action, item_id: itemId }));
+      showToast('✅ Отправлено боту. Закройте WebApp.', 'success');
     }
     function sendBan(tgId) {
-      if (!tgId) { alert('Нет ID пользователя'); return; }
+      if (!tgId) { showToast('Нет ID пользователя', 'error'); return; }
+      console.log('Ban:', tgId);
       tg.sendData(JSON.stringify({ action: 'admin_ban', tg_id: tgId }));
+      showToast('🚫 Забанен', 'success');
     }
 
-    // ========== INIT ==========
     async function loadAll() {
       await loadStats();
       await loadModeration();
