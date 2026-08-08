@@ -68,7 +68,7 @@
     .form-textarea::placeholder, .form-input::placeholder { color:var(--hint); }
     .form-row { display:flex; gap:10px; margin-bottom:12px; }
     .form-row .form-select { margin-bottom:0; }
-    .photo-upload { background:var(--card); border:2px dashed #636366; border-radius:14px; padding:20px; text-align:center; margin-bottom:12px; }
+    .photo-upload { background:var(--card); border:2px dashed #636366; border-radius:14px; padding:20px; text-align:center; margin-bottom:12px; cursor:pointer; }
     .photo-upload-icon { font-size:32px; margin-bottom:8px; }
     .photo-upload-text { font-size:14px; color:var(--hint); }
     .photo-preview { display:flex; gap:8px; margin-bottom:20px; flex-wrap:wrap; }
@@ -180,7 +180,8 @@
     const SUPABASE_KEY = 'sb_publishable_XbKZidr33cbRdwtqKD0zBw_Rsk-tGz3';
 
     const tg = window.Telegram.WebApp;
-    tg.ready(); tg.expand();
+    tg.ready();
+    tg.expand();
 
     const categories = [
       {id:1,name:'Одежда',icon:'👕'},{id:2,name:'Обувь',icon:'👟'},{id:3,name:'Техника',icon:'📱'},
@@ -213,7 +214,6 @@
       });
       tabsEl.innerHTML = html;
 
-      // Category click handlers
       tabsEl.querySelectorAll('.tab').forEach(btn => {
         btn.addEventListener('click', function() {
           const catId = this.getAttribute('data-cat');
@@ -224,8 +224,7 @@
         });
       });
 
-      // Form category select
-      document.getElementById('fCat').innerHTML = categories.map(c => 
+      document.getElementById('fCat').innerHTML = categories.map(c =>
         `<option value="${c.id}">${c.icon} ${c.name}</option>`
       ).join('');
     }
@@ -327,7 +326,6 @@
         </div>`;
       }).join('');
 
-      // Add click handlers to cards
       document.querySelectorAll('.card').forEach(card => {
         card.addEventListener('click', () => openDetail(card.getAttribute('data-id')));
       });
@@ -361,22 +359,24 @@
       dots.innerHTML = (currentItem.photos||[]).map((_,i) => `<div class="gal-dot ${i===currentPhotoIdx?'active':''}"></div>`).join('');
     }
 
-    function nextPhoto() { 
+    function nextPhoto() {
       if (currentItem.photos && currentPhotoIdx < currentItem.photos.length-1) { currentPhotoIdx++; updateGallery(); }
     }
-    function prevPhoto() { 
+    function prevPhoto() {
       if (currentPhotoIdx > 0) { currentPhotoIdx--; updateGallery(); }
     }
 
     // ===== FORM =====
-    function openForm() { 
-      console.log('openForm called');
-      document.getElementById('formModal').style.display = 'block'; 
+    function openForm() {
+      document.getElementById('formModal').style.display = 'block';
     }
-    function closeForm() { 
-      document.getElementById('formModal').style.display = 'none'; 
-      uploadedPhotos=[]; 
-      document.getElementById('photoPreview').innerHTML=''; 
+    function closeForm() {
+      document.getElementById('formModal').style.display = 'none';
+      uploadedPhotos=[];
+      document.getElementById('photoPreview').innerHTML='';
+      document.getElementById('fTitle').value='';
+      document.getElementById('fPrice').value='';
+      document.getElementById('fDesc').value='';
     }
 
     function submitItem() {
@@ -387,4 +387,4 @@
         price: +document.getElementById('fPrice').value,
         condition: document.getElementById('fCond').value,
         city: document.getElementById('fCity').value,
-        description: document.getElementById('fDesc').value.t
+        description: document.getElemen
