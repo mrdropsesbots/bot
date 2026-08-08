@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import asyncio
 from datetime import datetime
 import aiohttp
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, MenuButtonWebApp
@@ -109,7 +110,6 @@ async def web_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "http" in title or "t.me/" in title or "@" in title:
             return await update.message.reply_text("❌ Нельзя размещать ссылки в названии.")
 
-        # Profile
         profs = await sb_get(f"profiles?telegram_id=eq.{user.id}")
         if not profs:
             await sb_post("profiles", {
@@ -121,7 +121,6 @@ async def web_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
             profs = await sb_get(f"profiles?telegram_id=eq.{user.id}")
         profile_id = profs[0]["id"]
 
-        # Insert item
         result = await sb_post("items", {
             "profile_id": profile_id,
             "category_id": data["category_id"],
@@ -343,9 +342,7 @@ async def admin_moderate_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await moderate_cmd(update, context)
 
 # ================== MAIN ==================
-def main():
-    logging.basicConfig(level=logging.INFO)
-
+async def run_webhook():
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
     # Handlers
@@ -362,17 +359,27 @@ def main():
     app.add_handler(CallbackQueryHandler(ban_cb, pattern="^ban:"))
     app.add_handler(MessageHandler(filters.ALL, web_data))
 
-    # Webhook
     render_url = os.getenv("RENDER_EXTERNAL_URL", "")
     if render_url.startswith("http"):
-        app.run_webhook(
+        await app.initialize()
+        await app.start()
+        await app.updater.start_webhook(
             listen="0.0.0.0",
             port=int(os.getenv("PORT", 10000)),
             webhook_url=render_url + "/webhook",
             drop_pending_updates=True
         )
+        while True:
+            await asyncio.sleep(3600)
     else:
-        app.run_polling()
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling()
+        await app.updater.idle()
+
+def main():
+    logging.basicConfig(level=logging.INFO)
+    asyncio.run(run_webhook())
 
 if __name__ == "__main__":
     main()
