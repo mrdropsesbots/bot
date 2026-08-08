@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta http-equiv="Cache-Control" content="no-cache">
+  <title>Барахолка</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root{--bg:#0f0f0f;--card:#1c1c1e;--text:#fff;--hint:#636366;--accent:#0a84ff;--good:#34c759;--bad:#ff3b30}
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;padding:12px;padding-bottom:100px}
+    .header{text-align:center;margin-bottom:12px}
+    .header h1{font-size:20px}
+    .toolbar{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+    .search{flex:1;min-width:100px;background:var(--card);border:none;border-radius:12px;padding:10px 14px;color:var(--text);font-size:15px;outline:none}
+    .search::placeholder{color:var(--hint)}
+    select{background:var(--card);border:none;border-radius:12px;padding:10px;color:var(--text);font-size:14px;outline:none}
+    .tabs{display:flex;gap:8px;margin-bottom:12px;overflow-x:auto;padding-bottom:4px}
+    .tab{padding:8px 16px;border-radius:20px;border:none;background:var(--card);color:var(--hint);font-size:13px;font-weight:600;white-space:nowrap;cursor:pointer}
+    .tab.active{background:var(--accent);color:#fff}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .card{background:var(--card);border-radius:20px;overflow:hidden;transition:transform .1s}
+    .card:active{transform:scale(0.97)}
+    .card-img{position:relative;width:100%;aspect-ratio:1/1;background:#2c2c2e;display:flex;align-items:center;justify-content:center;overflow:hidden}
+    .card-img img{width:100%;height:100%;object-fit:cover;display:block}
+    .no-img{font-size:48px}
+    .badge{position:absolute;top:8px;left:8px;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:700;color:#fff;background:var(--good)}
+    .badge.vip{background:#ff9500}
+    .photo-count{position:absolute;top:8px;right:8px;padding:4px 8px;border-radius:10px;font-size:11px;font-weight:700;color:#fff;background:rgba(0,0,0,0.5)}
+    .card-body{padding:12px}
+    .card-title{font-size:15px;font-weight:600;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .card-price{font-size:16px;font-weight:700;color:var(--accent);margin-bottom:4px}
+    .card-meta{font-size:13px;color:var(--hint);margin-bottom:12px}
+    .empty{text-align:center;color:var(--hint);padding:40px}
+    .modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:var(--bg);z-index:100;overflow-y:auto}
+    .modal-inner{max-width:480px;margin:0 auto}
+    .gallery-wrap{position:relative;width:100%;aspect-ratio:1/1;background:#1c1c1e;overflow:hidden}
+    .gallery-track{display:flex;transition:transform 0.3s;height:100%}
+    .gallery-track img{width:100%;height:100%;object-fit:cover;flex-shrink:0;display:block}
+    .gal-btn{position:absolute;top:50%;transform:translateY(-50%);width:36px;height:36px;border-radius:50%;border:none;background:rgba(0,0,0,0.5);color:#fff;font-size:20px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+    .gal-prev{left:8px}
+    .gal-next{right:8px}
+    .gal-close{position:absolute;top:12px;right:12px;width:36px;height:36px;border-radius:50%;border:none;background:rgba(0,0,0,0.6);color:#fff;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:10}
+    .gal-dots{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);display:flex;gap:6px}
+    .gal-dot{width:8px;height:8px;border-radius:50%;background:#636366}
+    .gal-dot.active{background:#fff}
+    .detail-body{padding:20px}
+    .detail-price{font-size:26px;font-weight:700;color:var(--accent);margin-bottom:8px}
+    .detail-title{font-size:20px;font-weight:600;margin-bottom:12px}
+    .detail-meta{font-size:14px;color:var(--hint);margin-bottom:16px}
+    .detail-desc{font-size:15px;line-height:1.6;color:#ccc;margin-bottom:24px;white-space:pre-wrap}
+    .detail-chips{display:flex;gap:10px;margin-bottom:20px}
+    .chip{flex:1;background:var(--card);border-radius:14px;padding:14px;text-align:center}
+    .chip-label{font-size:12px;color:var(--hint);margin-bottom:4px}
+    .chip-val{font-size:15px;font-weight:600}
+    .detail-btn{width:100%;padding:16px;border:none;border-radius:14px;background:var(--accent);color:#fff;font-size:16px;font-weight:700;cursor:pointer;margin-bottom:10px}
+    .detail-row{display:flex;gap:10px}
+    .detail-row button{flex:1;padding:12px;border:none;border-radius:14px;background:var(--card);color:#fff;font-size:14px;font-weight:600;cursor:pointer}
+    .form-modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:var(--bg);z-index:100;overflow-y:auto}
+    .form-inner{max-width:480px;margin:0 auto;padding:20px}
+    .form-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}
+    .form-title{font-size:18px;font-weight:700}
+    .form-close{width:36px;height:36px;border-radius:50%;border:none;background:var(--card);color:#fff;font-size:18px;cursor:pointer}
+    .form-input,.form-select,.form-textarea{width:100%;margin-bottom:12px;padding:14px;border-radius:14px;border:none;background:var(--card);color:var(--text);font-size:15px;outline:none}
+    .form-textarea{resize:none}
+    .form-textarea::placeholder,.form-input::placeholder{color:var(--hint)}
+    .form-row{display:flex;gap:10px;margin-bottom:12px}
+    .form-row .form-select{margin-bottom:0}
+    .photo-upload{background:var(--card);border:2px dashed #636366;border-radius:14px;padding:20px;text-align:center;margin-bottom:12px;cursor:pointer}
+    .photo-upload-icon{font-size:32px;margin-bottom:8px}
+    .photo-upload-text{font-size:14px;color:var(--hint)}
+    .photo-preview{display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap}
+    .photo-preview img{width:70px;height:70px;border-radius:12px;object-fit:cover}
+    .form-submit{width:100%;padding:16px;border:none;border-radius:14px;background:var(--accent);color:#fff;font-size:16px;font-weight:700;cursor:pointer}
+    .form-hint{text-align:center;margin-top:12px;font-size:13px;color:var(--hint)}
+    .float-btn{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--accent);color:#fff;padding:14px 28px;border-radius:30px;font-size:15px;font-weight:700;cursor:pointer;box-shadow:0 4px 20px rgba(10,132,255,0.4);z-index:50;border:none}
+    .toast{position:fixed;top:20px;left:50%;transform:translateX(-50%);background:var(--card);color:#fff;padding:12px 20px;border-radius:12px;font-size:14px;z-index:200;display:none}
+    .toast.error{background:var(--bad)}
+    .toast.success{background:var(--good)}
+  </style>
+</head>
+<body>
+  <div class="toast" id="toast"></div>
+  <div class="header"><h1>🛍 Барахолка</h1></div>
+  <div class="toolbar">
+    <input class="search" id="search" placeholder="Поиск...">
+    <select id="cityFilter">
+      <option value="">Все города</option>
+      <option>Минск</option><option>Гомель</option><option>Могилёв</option>
+      <option>Витебск</option><option>Гродно</option><option>Брест</option>
+    </select>
+    <select id="condFilter">
+      <option value="">Все</option>
+      <option value="new">Новое</option>
+      <option value="like_new">Как новое</option>
+      <option value="used">Б/у</option>
+    </select>
+  </div>
+  <div class="tabs" id="catTabs"></div>
+  <div class="grid" id="grid"></div>
+  <div class="empty" id="empty" style="display:none">Ничего не найдено</div>
+  <button class="float-btn" id="sellBtn">➕ Продать</button>
+
+  <div class="modal" id="detailModal">
+    <div class="modal-inner">
+      <div class="gallery-wrap" id="galleryWrap">
+        <div class="gallery-track" id="galleryTrack"></div>
+        <button class="gal-btn gal-prev" id="galPrev">‹</button>
+        <button class="gal-btn gal-next" id="galNext">›</button>
+        <button class="gal-close" id="galClose">✕</button>
+        <div class="gal-dots" id="galDots"></div>
+      </div>
+      <div class="detail-body">
+        <div class="detail-price" id="dPrice"></div>
+        <div class="detail-title" id="dTitle"></div>
+        <div class="detail-meta" id="dMeta"></div>
+        <div class="detail-desc" id="dDesc"></div>
+        <div class="detail-chips">
+          <div class="chip"><div class="chip-label">Состояние</div><div class="chip-val" id="dCond"></div></div>
+          <div class="chip"><div class="chip-label">Город</div><div class="chip-val" id="dCity"></div></div>
+          <div class="chip"><div class="chip-label">Опубликовано</div><div class="chip-val" id="dDate"></div></div>
+        </div>
+        <button class="detail-btn" id="contactBtn">💬 Написать продавцу</button>
+        <div class="detail-row">
+          <button id="shareBtn">🔗 Поделиться</button>
+          <button id="favBtn">♡ В избранное</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="form-modal" id="formModal">
+    <div class="form-inner">
+      <div class="form-header">
+        <div class="form-title">➕ Продать вещь</div>
+        <button class="form-close" id="formClose">✕</button>
+      </div>
+      <select class="form-select" id="fCat"></select>
+      <input class="form-input" id="fTitle" placeholder="Название товара">
+      <input class="form-input" id="fPrice" placeholder="Цена (BYN)" type="number">
+      <div class="form-row">
+        <select class="form-select" id="fCond">
+          <option value="used">Б/у</option>
+          <option value="like_new">Как новое</option>
+          <option value="new">Новое</option>
+        </select>
+        <select class="form-select" id="fCity">
+          <option>Минск</option><option>Гомель</option><option>Могилёв</option>
+          <option>Витебск</option><option>Гродно</option><option>Брест</option>
+        </select>
+      </div>
+      <textarea class="form-textarea" id="fDesc" placeholder="Описание товара..." rows="5"></textarea>
+      <div class="photo-upload" id="photoUpload">
+        <div class="photo-upload-icon">📷</div>
+        <div class="photo-upload-text">Нажмите, чтобы добавить до 5 фото</div>
+      </div>
+      <input type="file" id="fPhotos" accept="image/*" multiple style="display:none;">
+      <div class="photo-preview" id="photoPreview"></div>
+      <button class="form-submit" id="submitBtn">Разместить объявление</button>
+      <div class="form-hint">После проверки модератором ваш товар появится в ленте</div>
+    </div>
+  </div>
+
+  <script>
+    const SUPABASE_URL='https://pfutmevbueqbfnhkwrrl.supabase.co';
+    const SUPABASE_KEY='sb_publishable_XbKZidr33cbRdwtqKD0zBw_Rsk-tGz3';
+    let tg;
+    try{tg=window.Telegram.WebApp;tg.ready();tg.expand()}catch(e){}
+    const categories=[{id:1,name:'Одежда',icon:'👕'},{id:2,name:'Обувь',icon:'👟'},{id:3,name:'Техника',icon:'📱'},{id:4,name:'Мебель',icon:'🪑'},{id:5,name:'Детское',icon:'🧸'},{id:6,name:'Спорт',icon:'⚽'},{id:7,name:'Книги',icon:'📚'},{id:8,name:'Для дома',icon:'🏠'},{id:9,name:'Авто',icon:'🚗'},{id:10,name:'Другое',icon:'📦'}];
+    let allItems=[],activeCat=null,uploadedPhotos=[],currentItem=null,currentPhotoIdx=0,touchStartX=0;
+    function showToast(msg,type=''){const t=document.getElementById('toast');t.innerText=msg;t.className='toast '+type;t.style.display='block';setTimeout(()=>t.style.display='none',4000)}
+    function initTabs(){const tabsEl=document.getElementById('catTabs');let html='<button class="tab active" data-cat="null">Все</button>';categories.forEach(c=>{html+=`<button class="tab" data-cat="${c.id}">${c.icon} ${c.name}</button>`});tabsEl.innerHTML=html;tabsEl.querySelectorAll('.tab').forEach(btn=>{btn.addEventListener('click',function(){const catId=this.getAttribute('data-cat');activeCat=catId==='null'?null:parseInt(catId);tabsEl.querySelectorAll('.tab').forEach(b=>b.classList.remove('active'));this.classList.add('active');render()})});document.getElementById('fCat').innerHTML=categories.map(c=>`<option value="${c.id}">${c.icon} ${c.name}</option>`).join('')}
+    document.getElementById('fPhotos').addEventListener('change',async(e)=>{const files=Array.from(e.target.files).slice(0,5);uploadedPhotos=[];const prev=document.getElementById('photoPreview');prev.innerHTML='';showToast(`Загрузка ${files.length} фото...`);for(const file of files){const url=await uploadPhoto(file);if(url){uploadedPhotos.push(url);prev.innerHTML+=`<img src="${url}">`}}if(uploadedPhotos.length>0){showToast(`✅ Загружено ${uploadedPhotos.length} фото`,'success')}});
+    async function uploadPhoto(file){try{const filename=`${Date.now()}_${Math.random().toString(36).slice(2)}_${file.name}`;const res=await fetch(`${SUPABASE_URL}/storage/v1/object/item-images/${filename}`,{method:'POST',headers:{'Authorization':`Bearer ${SUPABASE_KEY}`},body:file});if(!res.ok){const err=await res.text();console.error('Upload error:',res.status,err);showToast(`Ошибка загрузки: ${res.status}`,'error');return null}return `${SUPABASE_URL}/storage/v1/object/public/item-images/${filename}`}catch(e){console.error('Upload exception:',e);showToast('Ошибка сети при загрузке','error');return null}}
+    async function loadItems(){try{const res=await fetch(`${SUPABASE_URL}/rest/v1/items?select=*,profiles(username,full_name,telegram_id)&status=eq.approved&is_active=eq.true&order=created_at.desc`,{headers:{apikey:SUPABASE_KEY,Authorization:`Bearer ${SUPABASE_KEY}`}});allItems=await res.json();render()}catch(e){console.error('Load error:',e);showToast('Ошибка загрузки товаров','error')}}
+    function condLabel(c){return c==='new'?'Новое':c==='like_new'?'Как новое':'Б/у'}
+    function condColor(c){return c==='new'?'#34c759':c==='like_new'?'#ff9500':'#636366'}
+    function render(){const q=document.getElementById('search').value.toLowerCase();const city=document.getElementById('cityFilter').value;const cond=document.getElementById('condFilter').value;const filtered=allItems.filter(s=>{const matchCat=!activeCat||s.category_id===activeCat;const matchCity=!city||s.city===city;const matchCond=!cond||s.condition===cond;const matchQ=!q||s.title.toLowerCase().includes(q)||(s.description||'').toLowerCase().includes(q);return matchCat&&matchCity&&matchCond&&matchQ});const grid=document.getElementById('grid');const empty=document.getElementById('empty');if(!filtered.length){grid.innerHTML='';empty.style.display='block';return}empty.style.display='none';grid.innerHTML=filtered.map(s=>{const cat=categories.find(c=>c.id===s.category_id)||{};const img=s.photos&&s.photos.length?s.photos[0]:null;return`<div class="card" data-id="${s.id}"><div class="card-img">${img?`<img src="${img}" loading="lazy">`:`<div class="no-img">${cat.icon||'📦'}</div>`}${s.is_vip?'<span class="badge vip">VIP</span>':`<span class="badge" style="background:${condColor(s.condition)}">${condLabel(s.condition)}</span>`}${s.photos&&s.photos.length>1?`<span class="photo-count">1/${s.photos.length}</span>`:''}</div><div class="card-body"><div class="card-title">${s.title}</div><div class="card-price">${s.price} BYN</div><div class="card-meta">${s.city} · ${s.profiles?.full_name||'Продавец'}</div></div></div>`}).join('');document.querySelectorAll('.card').forEach(card=>{card.addEventListener('click',()=>openDetail(card.getAttribute('data-id')))})}
+    function openDetail(id){currentItem=allItems.find(i=>i.id===id);if(!currentItem)return;currentPhotoIdx=0;document.getElementById('dPrice').innerText=currentItem.price+' BYN';document.getElementById('dTitle').innerText=currentItem.title;document.getElementById('dMeta').innerText=currentItem.city+' · '+(currentItem.profiles?.full_name||'Продавец');document.getElementById('dDesc').innerText=currentItem.description||'Нет описания';document.getElementById('dCond').innerText=condLabel(currentItem.condition);document.getElementById('dCity').innerText=currentItem.city;document.getElementById('dDate').innerText=new Date(currentItem.created_at).toLocaleDateString('ru-RU');updateGallery();document.getElementById('detailModal').style.display='block'}
+    function closeDetail(){document.getElementById('detailModal').style.display='none'}
+    function updateGallery(){const track=document.getElementById('galleryTrack');const dots=document.getElementById('galDots');track.innerHTML=(currentItem.photos||[]).map(p=>`<img src="${p}">`).join('');track.style.transform=`translateX(-${currentPhotoIdx*100}%)`;dots.innerHTML=(currentItem.photos||[]).map((_,i)=>`<div class="gal-dot ${i===currentPhotoIdx?'active':''}"></div>`).join('')}
+    function nextPhoto(){if(currentItem.photos&&currentPhotoIdx<currentItem.photos.length-1){currentPhotoIdx++;updateGallery()}}
+    function prevPhoto(){if(currentPhotoIdx>0){currentPhotoIdx--;updateGallery()}}
+    function openForm(){document.getElementById('formModal').style.display='block'}
+    function closeForm(){document.getElementById('formModal').style.display='none';uploadedPhotos=[];document.getElementById('photoPreview').innerHTML='';document.getElementById('fTitle').value='';document.getElementById('fPrice').value='';document.getElementById('fDesc').value=''}
+    function submitItem(){const data={action:'create_item',category_id:+document.getElementById('fCat').value,title:document.getElementById('fTitle').value.trim(),price:+document.getElementById('fPrice').value,condition:document.getElementById('fCond').value,city:document.getElementById('fCity').value,description:document.getElementById('fDesc').value.trim(),photos:uploadedPhotos};if(data.title.length<3){showToast('Слишком короткое название','error');return}if(!data.price||data.price<=0){showToast('Укажите корректную цену','error');return}if(uploadedPhotos.length===0){showToast('Добавьте хотя бы одно фото','error');return}tg.sendData(JSON.stringify(data));showToast('Отправлено на модерацию','success');setTimeout(()=>tg.close(),1500)}
+    document.getElementById('sellBtn').addEventListener('click',openForm);
+    document.getElementById('formClose').addEventListener('click',closeForm);
+    document.getElementById('photoUpload').addEventListener('click',()=>document.getElementById('fPhotos').click());
+    document.getElementById('submitBtn').addEventListener('click',submitItem);
+    document.getElementById('galClose').addEventListener('click',closeDetail);
+    document.getElementById('galPrev').addEventListener('click',prevPhoto);
+    document.getElementById('galNext').addEventListener('click',nextPhoto);
+    const galleryWrap=document.getElementById('galleryWrap');
+    galleryWrap.addEventListener('touchstart',e=>{touchStartX=e.touches[0].clientX});
+    galleryWrap.addEventListener('touchend',e=>{const diff=touchStartX-e.changedTouches[0].clientX;if(Math.abs(diff)>50){diff>0?nextPhoto():prevPhoto()}});
+    document.getElementById('contactBtn').addEventListener('click',()=>{if(!currentItem)return;tg.sendData(JSON.stringify({action:'interest',item_id:currentItem.id}));showToast('Запрос продавцу отправлен','success');setTimeout(()=>tg.close(),1000)});
+    document.getElementById('shareBtn').addEventListener('click',()=>{if(!currentItem)return;const text=encodeURIComponent(`${currentItem.title} — ${currentItem.price} BYN`);tg.openTelegramLink(`https://t.me/share/url?url=&text=${text}`)});
+    document.getElementById('favBtn').addEventListener('click',()=>showToast('Добавлено в избранное','success'));
+    document.getElementById('search').addEventListener('input',render);
+    document.getElementById('cityFilter').addEventListener('change',render);
+    document.getElementById('condFilter').addEventListener('change',render);
+    initTabs();
+    loadItems();
+  </script>
+</body>
+</html>
