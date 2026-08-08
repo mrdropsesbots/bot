@@ -1,11 +1,11 @@
 import os
 import json
 import logging
-import asyncio
 from datetime import datetime
 import aiohttp
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, MenuButtonWebApp
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from aiogram import Bot, Dispatcher, types
+from aiogram.utils.executor import start_webhook
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, MenuButtonWebApp
 
 # ================== CONFIG ==================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -13,6 +13,9 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 WEBAPP_URL = os.getenv("WEBAPP_URL")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+WEBHOOK_HOST = os.getenv("RENDER_EXTERNAL_URL", "")
+WEBHOOK_PATH = "/webhook"
+WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
 HEADERS = {
     "apikey": SUPABASE_KEY,
@@ -47,28 +50,26 @@ async def sb_count(path: str, query: str = ""):
             range_header = resp.headers.get("content-range", "0-0/0")
             return int(range_header.split("/")[-1])
 
-# ================== POST INIT ==================
-async def post_init(app: Application):
-    await app.bot.set_chat_menu_button(
-        menu_button=MenuButtonWebApp(text="Барахолка", web_app=WebAppInfo(url=WEBAPP_URL))
-    )
+# ================== INIT BOT ==================
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(bot)
 
-# ================== USER HANDLERS ==================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🛍 Открыть барахолку", web_app=WebAppInfo(url=WEBAPP_URL))
-    ], [
-        InlineKeyboardButton("❓ Как продать", callback_data="help")
-    ]])
-    await update.message.reply_text(
-        "Привет! Здесь можно продать или купить вещи в Беларуси.\n\nНажмите кнопку ниже 👇",
+# ================== HANDLERS ==================
+@dp.message_handler(commands=['start'])
+async def start(message: types.Message):
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("🛍 Открыть барахолку", web_app=WebAppInfo(url=WEBAPP_URL)))
+    kb.add(InlineKeyboardButton("❓ Как продать", callback_data="help"))
+    await message.answer(
+        "Привет! Здесь можно продать или купить вещи в Беларуси.\n\n"
+        "Нажмите кнопку ниже 👇",
         reply_markup=kb
     )
 
-async def help_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.message.reply_text(
+@dp.callback_query_handler(lambda c: c.data == 'help')
+async def help_cb(call: types.CallbackQuery):
+    await call.answer()
+    await call.message.answer(
         "1. Нажмите «Открыть барахолку»\n"
         "2. Нажмите ➕ Продать внизу\n"
         "3. Заполните форму и прикрепите фото\n"
@@ -76,8 +77,9 @@ async def help_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "VIP-размещение — /vip"
     )
 
-async def vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+@dp.message_handler(commands=['vip'])
+async def vip(message: types.Message):
+    await message.answer(
         "💎 <b>VIP-объявление</b>\n\n"
         "Ваш товар будет в начале ленты с оранжевой меткой.\n"
         "Стоимость: 5 BYN / 7 дней\n\n"
@@ -86,13 +88,11 @@ async def vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ================== WEB APP DATA ==================
-async def web_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.web_app_data:
-        return
-    
-    data = json.loads(update.message.web_app_data.data)
+@dp.message_handler(content_types=types.ContentType.WEB_APP_DATA)
+async def web_data(message: types.Message):
+    data = json.loads(message.web_app_data.data)
     action = data.get("action")
-    user = update.effective_user
+    user = message.from_user
 
     if action == "create_item":
         title = data.get("title", "").strip()
@@ -100,15 +100,15 @@ async def web_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         price = data.get("price", 0)
 
         if len(title) < 3:
-            return await update.message.reply_text("❌ Слишком короткое название. Минимум 3 символа.")
+            return await message.answer("❌ Слишком короткое название. Минимум 3 символа.")
         if price > 100000:
-            return await update.message.reply_text("❌ Цена слишком высокая. Максимум 100 000 BYN.")
+            return await message.answer("❌ Цена слишком высокая. Максимум 100 000 BYN.")
         
         banned = ["кокаин", "героин", "оружие", "паспорт", "права", "диплом", "наркотик", "пистолет", "травмат", "куплю почку"]
         if any(word in (title + " " + desc).lower() for word in banned):
-            return await update.message.reply_text("❌ Объявление содержит запрещённый товар.")
+            return await message.answer("❌ Объявление содержит запрещённый товар.")
         if "http" in title or "t.me/" in title or "@" in title:
-            return await update.message.reply_text("❌ Нельзя размещать ссылки в названии.")
+            return await message.answer("❌ Нельзя размещать ссылки в названии.")
 
         profs = await sb_get(f"profiles?telegram_id=eq.{user.id}")
         if not profs:
@@ -134,19 +134,19 @@ async def web_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "status": "pending"
         })
 
-        await update.message.reply_text(
+        await message.answer(
             "⏳ Объявление отправлено на модерацию.\n"
             "Обычно проверка занимает 10–30 минут."
         )
 
         if ADMIN_ID and result:
-            await notify_admin(context, result[0]["id"], data, user)
+            await notify_admin(result[0]["id"], data, user)
 
     elif action == "interest":
         item_id = data["item_id"]
         items = await sb_get(f"items?id=eq.{item_id}&select=*,profiles(username,telegram_id)")
         if not items:
-            return await update.message.reply_text("❌ Товар не найден")
+            return await message.answer("❌ Товар не найден")
         
         item = items[0]
         seller_tg = item["profiles"]["telegram_id"]
@@ -158,7 +158,7 @@ async def web_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "message": data.get("message", "")
         })
 
-        await context.bot.send_message(
+        await bot.send_message(
             seller_tg,
             f"📩 <b>Новый покупатель!</b>\n\n"
             f"<b>Товар:</b> {item['title']}\n"
@@ -167,15 +167,15 @@ async def web_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Напишите ему первым!",
             parse_mode="HTML"
         )
-        await update.message.reply_text("✅ Продавец уведомлён! Он свяжется с вами.")
+        await message.answer("✅ Продавец уведомлён! Он свяжется с вами.")
 
-async def notify_admin(context: ContextTypes.DEFAULT_TYPE, item_id: str, data: dict, user):
-    kb = InlineKeyboardMarkup([[
+async def notify_admin(item_id, data, user):
+    kb = InlineKeyboardMarkup()
+    kb.row(
         InlineKeyboardButton("✅ Одобрить", callback_data=f"approve:{item_id}"),
         InlineKeyboardButton("❌ Отклонить", callback_data=f"reject:{item_id}")
-    ], [
-        InlineKeyboardButton("🚫 Забанить", callback_data=f"ban:{user.id}")
-    ]])
+    )
+    kb.add(InlineKeyboardButton("🚫 Забанить", callback_data=f"ban:{user.id}"))
 
     text = (
         f"🆕 <b>Новое на модерацию</b>\n\n"
@@ -189,16 +189,17 @@ async def notify_admin(context: ContextTypes.DEFAULT_TYPE, item_id: str, data: d
     photos = data.get("photos", [])
     try:
         if photos:
-            await context.bot.send_photo(ADMIN_ID, photos[0], caption=text, reply_markup=kb, parse_mode="HTML")
+            await bot.send_photo(ADMIN_ID, photos[0], caption=text, reply_markup=kb, parse_mode="HTML")
         else:
-            await context.bot.send_message(ADMIN_ID, text, reply_markup=kb, parse_mode="HTML")
+            await bot.send_message(ADMIN_ID, text, reply_markup=kb, parse_mode="HTML")
     except Exception as e:
         logging.error(f"Admin notify error: {e}")
 
 # ================== ADMIN COMMANDS ==================
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return await update.message.reply_text("⛔️ Только для админа.")
+@dp.message_handler(commands=['admin'])
+async def admin_panel(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return await message.answer("⛔️ Только для админа.")
 
     total_users = await sb_count("profiles")
     total_items = await sb_count("items")
@@ -222,29 +223,31 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/users — последние юзеры"
     )
 
-    kb = InlineKeyboardMarkup([[
+    kb = InlineKeyboardMarkup()
+    kb.row(
         InlineKeyboardButton("🔥 На модерации", callback_data="admin:moderate"),
         InlineKeyboardButton("♻️ Обновить", callback_data="admin:refresh")
-    ]])
+    )
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
-    await update.message.reply_text(text, reply_markup=kb, parse_mode="HTML")
-
-async def moderate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return await update.message.reply_text("⛔️ Только для админа.")
+@dp.message_handler(commands=['moderate'])
+async def moderate_cmd(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return await message.answer("⛔️ Только для админа.")
 
     pending = await sb_get("items?status=eq.pending&select=*,profiles(username,telegram_id)&order=created_at.asc&limit=5")
 
     if not pending:
-        return await update.message.reply_text("✅ Нет объявлений на модерации.")
+        return await message.answer("✅ Нет объявлений на модерации.")
 
-    await update.message.reply_text(f"🔥 <b>На модерации: {len(pending)}</b>", parse_mode="HTML")
+    await message.answer(f"🔥 <b>На модерации: {len(pending)}</b>", parse_mode="HTML")
 
     for item in pending:
-        kb = InlineKeyboardMarkup([[
+        kb = InlineKeyboardMarkup()
+        kb.row(
             InlineKeyboardButton("✅ Одобрить", callback_data=f"approve:{item['id']}"),
             InlineKeyboardButton("❌ Отклонить", callback_data=f"reject:{item['id']}")
-        ]])
+        )
 
         text = (
             f"📦 <b>{item['title']}</b>\n"
@@ -254,127 +257,113 @@ async def moderate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         if item.get('photos') and len(item['photos']) > 0:
-            await update.message.reply_photo(item['photos'][0], caption=text, reply_markup=kb, parse_mode="HTML")
+            await message.answer_photo(item['photos'][0], caption=text, reply_markup=kb, parse_mode="HTML")
         else:
-            await update.message.reply_text(text, reply_markup=kb, parse_mode="HTML")
+            await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
-async def users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return await update.message.reply_text("⛔️ Только для админа.")
+@dp.message_handler(commands=['users'])
+async def users_cmd(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return await message.answer("⛔️ Только для админа.")
 
     users = await sb_get("profiles?order=created_at.desc&limit=10")
     if not users:
-        return await update.message.reply_text("Нет пользователей.")
+        return await message.answer("Нет пользователей.")
 
     text = "👤 <b>Последние 10 пользователей:</b>\n\n"
     for u in users:
         text += f"• @{u.get('username') or '—'} — {u.get('full_name', 'Без имени')} — {u['city']} — <code>{u['telegram_id']}</code>\n"
 
-    await update.message.reply_text(text, parse_mode="HTML")
+    await message.answer(text, parse_mode="HTML")
 
 # ================== CALLBACKS ==================
-async def approve_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if query.from_user.id != ADMIN_ID:
-        return await query.answer("Нет доступа", show_alert=True)
+@dp.callback_query_handler(lambda c: c.data.startswith('approve:'))
+async def approve_cb(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return await call.answer("Нет доступа", show_alert=True)
 
-    item_id = query.data.split(":")[1]
+    item_id = call.data.split(":")[1]
     await sb_patch(f"items?id=eq.{item_id}", {"status": "approved", "is_active": True})
 
     items = await sb_get(f"items?id=eq.{item_id}&select=*,profiles(telegram_id)")
     if items:
-        await context.bot.send_message(
+        await bot.send_message(
             items[0]["profiles"]["telegram_id"],
             f"✅ Ваше объявление одобрено!\n\n📦 {items[0]['title']}\n💰 {items[0]['price']} BYN"
         )
 
-    old = query.message.caption or query.message.text or ""
+    old = call.message.caption or call.message.text or ""
     new_text = old + "\n\n✅ ОДОБРЕНО"
-    if query.message.photo:
-        await query.edit_message_caption(caption=new_text, reply_markup=None)
+    if call.message.photo:
+        await call.message.edit_caption(caption=new_text, reply_markup=None)
     else:
-        await query.edit_message_text(text=new_text, reply_markup=None)
-    await query.answer("Одобрено")
+        await call.message.edit_text(text=new_text, reply_markup=None)
+    await call.answer("Одобрено")
 
-async def reject_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if query.from_user.id != ADMIN_ID:
-        return await query.answer("Нет доступа", show_alert=True)
+@dp.callback_query_handler(lambda c: c.data.startswith('reject:'))
+async def reject_cb(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return await call.answer("Нет доступа", show_alert=True)
 
-    item_id = query.data.split(":")[1]
+    item_id = call.data.split(":")[1]
     await sb_patch(f"items?id=eq.{item_id}", {"status": "rejected", "is_active": False})
 
     items = await sb_get(f"items?id=eq.{item_id}&select=*,profiles(telegram_id)")
     if items:
-        await context.bot.send_message(
+        await bot.send_message(
             items[0]["profiles"]["telegram_id"],
             "❌ Ваше объявление отклонено.\n\nВозможные причины: запрещённый товар, некорректное описание, отсутствие фото."
         )
 
-    old = query.message.caption or query.message.text or ""
+    old = call.message.caption or call.message.text or ""
     new_text = old + "\n\n❌ ОТКЛОНЕНО"
-    if query.message.photo:
-        await query.edit_message_caption(caption=new_text, reply_markup=None)
+    if call.message.photo:
+        await call.message.edit_caption(caption=new_text, reply_markup=None)
     else:
-        await query.edit_message_text(text=new_text, reply_markup=None)
-    await query.answer("Отклонено")
+        await call.message.edit_text(text=new_text, reply_markup=None)
+    await call.answer("Отклонено")
 
-async def ban_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if query.from_user.id != ADMIN_ID:
-        return await query.answer("Нет доступа", show_alert=True)
+@dp.callback_query_handler(lambda c: c.data.startswith('ban:'))
+async def ban_cb(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return await call.answer("Нет доступа", show_alert=True)
 
-    tg_id = query.data.split(":")[1]
-    await query.message.reply_text(
-        f"🚫 Пользователь <code>{tg_id}</code> в бан-листе.",
-        parse_mode="HTML"
-    )
-    await query.answer("Забанен")
+    tg_id = call.data.split(":")[1]
+    await call.message.answer(f"🚫 Пользователь <code>{tg_id}</code> в бан-листе.", parse_mode="HTML")
+    await call.answer("Забанен")
 
-async def admin_refresh_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer("Обновлено")
-    await admin_panel(update, context)
+@dp.callback_query_handler(lambda c: c.data == 'admin:refresh')
+async def admin_refresh_cb(call: types.CallbackQuery):
+    await call.answer("Обновлено")
+    await admin_panel(call.message)
 
-async def admin_moderate_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await moderate_cmd(update, context)
+@dp.callback_query_handler(lambda c: c.data == 'admin:moderate')
+async def admin_moderate_cb(call: types.CallbackQuery):
+    await call.answer()
+    await moderate_cmd(call.message)
+
+# ================== STARTUP / SHUTDOWN ==================
+async def on_startup(dp):
+    if WEBHOOK_HOST:
+        await bot.set_webhook(WEBHOOK_URL)
+        await bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp(text="Барахолка", web_app=WebAppInfo(url=WEBAPP_URL))
+        )
+        logging.info(f"Webhook set: {WEBHOOK_URL}")
+    else:
+        logging.warning("RENDER_EXTERNAL_URL not set")
+
+async def on_shutdown(dp):
+    await bot.delete_webhook()
 
 # ================== MAIN ==================
-async def run_webhook():
-    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
-
-    # Handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("vip", vip))
-    app.add_handler(CommandHandler("admin", admin_panel))
-    app.add_handler(CommandHandler("moderate", moderate_cmd))
-    app.add_handler(CommandHandler("users", users_cmd))
-    app.add_handler(CallbackQueryHandler(help_cb, pattern="^help$"))
-    app.add_handler(CallbackQueryHandler(admin_refresh_cb, pattern="^admin:refresh$"))
-    app.add_handler(CallbackQueryHandler(admin_moderate_cb, pattern="^admin:moderate$"))
-    app.add_handler(CallbackQueryHandler(approve_cb, pattern="^approve:"))
-    app.add_handler(CallbackQueryHandler(reject_cb, pattern="^reject:"))
-    app.add_handler(CallbackQueryHandler(ban_cb, pattern="^ban:"))
-    app.add_handler(MessageHandler(filters.ALL, web_data))
-
-    render_url = os.getenv("RENDER_EXTERNAL_URL", "")
-    if render_url.startswith("http"):
-        await app.initialize()
-        await app.start()
-        await app.updater.start_webhook(
-            listen="0.0.0.0",
-            port=int(os.getenv("PORT", 10000)),
-            url_path="webhook",  # <-- ИСПРАВЛЕНИЕ: слушаем путь /webhook
-            webhook_url=render_url + "/webhook",
-            drop_pending_updates=True
-        )
-        while True:
-            await asyncio.sleep(3600)
-    else:
-        await app.initialize()
-        await app.start()
-        await app.updater.start_polling()
-        await app.updater.idle()
-
+if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO)
+    start_webhook(
+        dispatcher=dp,
+        webhook_path=WEBHOOK_PATH,
+        on_startup=on_startup,
+        on_shutdown=on_shutdown,
+        host='0.0.0.0',
+        port=int(os.environ.get('PORT', 10000))
+    )
