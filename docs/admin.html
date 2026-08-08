@@ -3,186 +3,177 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta http-equiv="Cache-Control" content="no-cache">
   <title>Админ-панель</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
-    :root { --bg:#0f0f0f; --card:#1c1c1e; --text:#fff; --hint:#636366; --accent:#0a84ff; --good:#34c759; --bad:#ff3b30; --warn:#ff9500; }
-    * { box-sizing:border-box; margin:0; padding:0; }
-    body { background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; padding:12px; padding-bottom:100px; }
-    .header { text-align:center; margin-bottom:16px; }
-    .header h1 { font-size:20px; }
-    .tabs { display:flex; gap:8px; margin-bottom:16px; overflow-x:auto; padding-bottom:4px; }
-    .tab { padding:10px 18px; border-radius:20px; border:none; background:var(--card); color:var(--hint); font-size:13px; font-weight:600; white-space:nowrap; cursor:pointer; }
-    .tab.active { background:var(--accent); color:#fff; }
-    .section { display:none; }
-    .section.active { display:block; }
-    .stats-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:16px; }
-    .stat-card { background:var(--card); border-radius:16px; padding:16px; text-align:center; }
-    .stat-value { font-size:28px; font-weight:700; color:var(--accent); margin-bottom:4px; }
-    .stat-label { font-size:12px; color:var(--hint); }
-    .item-card { background:var(--card); border-radius:16px; overflow:hidden; margin-bottom:12px; }
-    .item-img { width:100%; aspect-ratio:16/9; object-fit:cover; background:#2c2c2e; }
-    .item-body { padding:14px; }
-    .item-title { font-size:15px; font-weight:600; margin-bottom:6px; }
-    .item-meta { font-size:13px; color:var(--hint); margin-bottom:8px; }
-    .item-desc { font-size:13px; color:#ccc; margin-bottom:12px; line-height:1.5; }
-    .item-actions { display:flex; gap:8px; }
-    .btn { flex:1; padding:10px 0; border:none; border-radius:12px; font-size:14px; font-weight:700; cursor:pointer; color:#fff; }
-    .btn-ok { background:var(--good); }
-    .btn-no { background:var(--bad); }
-    .btn-ban { background:var(--warn); }
-    .empty { text-align:center; color:var(--hint); padding:40px; }
-    .user-row { display:flex; justify-content:space-between; align-items:center; background:var(--card); border-radius:12px; padding:12px 14px; margin-bottom:8px; }
-    .user-name { font-size:14px; font-weight:600; }
-    .user-id { font-size:12px; color:var(--hint); }
-    .refresh-btn { position:fixed; bottom:20px; right:20px; width:50px; height:50px; border-radius:50%; border:none; background:var(--accent); color:#fff; font-size:22px; cursor:pointer; box-shadow:0 4px 20px rgba(10,132,255,0.4); z-index:50; }
-    .toast { position:fixed; top:20px; left:50%; transform:translateX(-50%); background:var(--card); color:#fff; padding:12px 20px; border-radius:12px; font-size:14px; z-index:200; display:none; }
-    .toast.error { background:var(--bad); }
-    .toast.success { background:var(--good); }
+    :root{--bg:#0f0f0f;--card:#1c1c1e;--text:#fff;--hint:#636366;--accent:#0a84ff;--good:#34c759;--bad:#ff3b30;--warn:#ff9500}
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;padding:12px;padding-bottom:40px}
+    .header{text-align:center;margin-bottom:16px}
+    .header h1{font-size:20px}
+    .stats{text-align:center;color:var(--hint);font-size:14px;margin-bottom:16px}
+    .empty{text-align:center;color:var(--hint);padding:60px 20px;font-size:15px}
+    .card{background:var(--card);border-radius:20px;overflow:hidden;margin-bottom:16px;transition:opacity .3s,transform .3s}
+    .card.done{opacity:0;transform:translateX(100%)}
+    .card-img{width:100%;aspect-ratio:16/10;background:#2c2c2e;overflow:hidden;position:relative}
+    .card-img img{width:100%;height:100%;object-fit:cover;display:block}
+    .no-img{font-size:48px;display:flex;align-items:center;justify-content:center;height:100%;color:var(--hint)}
+    .card-body{padding:16px}
+    .card-title{font-size:17px;font-weight:700;margin-bottom:6px}
+    .card-price{font-size:18px;font-weight:700;color:var(--accent);margin-bottom:4px}
+    .card-meta{font-size:13px;color:var(--hint);margin-bottom:8px;line-height:1.5}
+    .card-desc{font-size:14px;color:#ccc;line-height:1.5;margin-bottom:12px;white-space:pre-wrap;word-break:break-word}
+    .card-seller{font-size:13px;color:var(--hint);margin-bottom:16px;padding:10px;background:rgba(255,255,255,0.03);border-radius:10px}
+    .card-seller b{color:var(--text)}
+    .actions{display:flex;gap:8px}
+    .actions button{flex:1;padding:12px;border:none;border-radius:12px;font-size:14px;font-weight:700;cursor:pointer;color:#fff}
+    .btn-approve{background:var(--good)}
+    .btn-reject{background:var(--bad)}
+    .btn-ban{background:var(--hint)}
+    .toast{position:fixed;top:20px;left:50%;transform:translateX(-50%);background:var(--card);color:#fff;padding:12px 20px;border-radius:12px;font-size:14px;z-index:200;display:none}
+    .toast.error{background:var(--bad)}
+    .toast.success{background:var(--good)}
+    .refresh-btn{position:fixed;bottom:20px;right:20px;width:50px;height:50px;border-radius:50%;border:none;background:var(--accent);color:#fff;font-size:22px;cursor:pointer;box-shadow:0 4px 20px rgba(10,132,255,0.4);z-index:50;display:flex;align-items:center;justify-content:center}
   </style>
 </head>
 <body>
   <div class="toast" id="toast"></div>
-
   <div class="header"><h1>⚙️ Админ-панель</h1></div>
-
-  <div class="tabs" id="tabs">
-    <button class="tab active" onclick="switchTab('stats')">📊 Статистика</button>
-    <button class="tab" onclick="switchTab('moderate')">🔥 Модерация</button>
-    <button class="tab" onclick="switchTab('users')">👤 Пользователи</button>
-  </div>
-
-  <div class="section active" id="sec-stats">
-    <div class="stats-grid">
-      <div class="stat-card"><div class="stat-value" id="st-items">—</div><div class="stat-label">Всего объявлений</div></div>
-      <div class="stat-card"><div class="stat-value" id="st-pending">—</div><div class="stat-label">На модерации</div></div>
-      <div class="stat-card"><div class="stat-value" id="st-users">—</div><div class="stat-label">Пользователей</div></div>
-      <div class="stat-card"><div class="stat-value" id="st-today">—</div><div class="stat-label">Сегодня</div></div>
-    </div>
-  </div>
-
-  <div class="section" id="sec-moderate">
-    <div id="mod-list"></div>
-    <div class="empty" id="mod-empty" style="display:none">✅ Нет объявлений на модерации</div>
-  </div>
-
-  <div class="section" id="sec-users">
-    <div id="users-list"></div>
-  </div>
-
-  <button class="refresh-btn" onclick="loadAll()">↻</button>
+  <div class="stats" id="stats">Загрузка...</div>
+  <div id="list"></div>
+  <button class="refresh-btn" id="refreshBtn" title="Обновить">↻</button>
 
   <script>
-    // ========== CONFIG (те же, что в index.html) ==========
     const SUPABASE_URL = 'https://pfutmevbueqbfnhkwrrl.supabase.co';
     const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBmdXRtZXZidWVxYmZuaGt3cnJsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYxOTgwOTEsImV4cCI6MjEwMTc3NDA5MX0.hpTIoMmMJkTCdLLOyBv5HoTQ6eZnqR0e5f2v6PgR4Ok';
 
-    const tg = window.Telegram.WebApp;
-    tg.ready(); tg.expand();
-    tg.setHeaderColor('#0f0f0f');
+    let tg;
+    try {
+      tg = window.Telegram.WebApp;
+      tg.ready();
+      tg.expand();
+    } catch(e) {}
 
     function showToast(msg, type='') {
       const t = document.getElementById('toast');
       t.innerText = msg;
       t.className = 'toast ' + type;
       t.style.display = 'block';
-      setTimeout(() => t.style.display = 'none', 4000);
+      setTimeout(() => t.style.display = 'none', 3000);
     }
 
-    function switchTab(name) {
-      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-      document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
-      event.target.classList.add('active');
-      document.getElementById('sec-' + name).classList.add('active');
-    }
-
-    async function sbCount(path, query='') {
-      const url = `${SUPABASE_URL}/rest/v1/${path}?${query}&limit=1`;
-      const res = await fetch(url, { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, Prefer: 'count=exact' } });
-      const range = res.headers.get('content-range') || '0-0/0';
-      return parseInt(range.split('/')[1]) || 0;
-    }
-    async function sbGet(path) {
-      const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
-        headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
-      });
-      if (!res.ok) { console.error('sbGet error', res.status, path); return []; }
-      return res.json();
-    }
-
-    async function loadStats() {
-      const [items, pending, users] = await Promise.all([
-        sbCount('items'), sbCount('items', 'status=eq.pending'), sbCount('profiles')
-      ]);
-      const today = new Date().toISOString().split('T')[0];
-      const todayItems = await sbCount('items', `created_at=gte.${today}`);
-      document.getElementById('st-items').innerText = items;
-      document.getElementById('st-pending').innerText = pending;
-      document.getElementById('st-users').innerText = users;
-      document.getElementById('st-today').innerText = todayItems;
-    }
-
-    async function loadModeration() {
-      const list = document.getElementById('mod-list');
-      const empty = document.getElementById('mod-empty');
+    async function loadPending() {
+      const list = document.getElementById('list');
+      const stats = document.getElementById('stats');
       list.innerHTML = '';
-      const items = await sbGet('items?status=eq.pending&select=*,profiles(username,telegram_id)&order=created_at.asc');
-      if (!items || items.length === 0) { empty.style.display = 'block'; return; }
-      empty.style.display = 'none';
-      items.forEach(item => {
-        const prof = item.profiles || {};
-        const img = (item.photos && item.photos.length) ? `<img class="item-img" src="${item.photos[0]}" loading="lazy">` : '';
-        list.innerHTML += `
-          <div class="item-card">
-            ${img}
-            <div class="item-body">
-              <div class="item-title">${item.title}</div>
-              <div class="item-meta">💰 ${item.price} BYN · 🏙 ${item.city} · 👤 @${prof.username || prof.telegram_id || '—'}</div>
-              <div class="item-desc">${item.description || 'Нет описания'}</div>
-              <div class="item-actions">
-                <button class="btn btn-ok" onclick="sendAction('admin_approve','${item.id}')">✅ Одобрить</button>
-                <button class="btn btn-no" onclick="sendAction('admin_reject','${item.id}')">❌ Отклонить</button>
-                <button class="btn btn-ban" onclick="sendBan('${prof.telegram_id}')">🚫 Бан</button>
+      stats.innerText = 'Загрузка...';
+
+      try {
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/items?status=eq.pending&select=*,profiles(username,full_name,telegram_id)&order=created_at.desc`, {
+          headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
+        });
+        const items = await res.json();
+
+        stats.innerText = `На модерации: ${items.length}`;
+
+        if (!items.length) {
+          list.innerHTML = '<div class="empty">✅ Нет объявлений на модерации</div>';
+          return;
+        }
+
+        list.innerHTML = items.map(item => `
+          <div class="card" id="card-${item.id}">
+            <div class="card-img">
+              ${item.photos && item.photos.length
+                ? `<img src="${item.photos[0]}" loading="lazy">`
+                : '<div class="no-img">📦</div>'}
+            </div>
+            <div class="card-body">
+              <div class="card-title">${escapeHtml(item.title)}</div>
+              <div class="card-price">${item.price} BYN</div>
+              <div class="card-meta">
+                🏙 ${item.city} · ${condLabel(item.condition)} · ${new Date(item.created_at).toLocaleDateString('ru-RU')}
+              </div>
+              <div class="card-desc">${escapeHtml(item.description || 'Нет описания')}</div>
+              <div class="card-seller">
+                👤 <b>${escapeHtml(item.profiles?.full_name || 'Без имени')}</b><br>
+                @${escapeHtml(item.profiles?.username || 'нет')}<br>
+                ID: <code>${item.profiles?.telegram_id || '—'}</code>
+              </div>
+              <div class="actions">
+                <button class="btn-approve" onclick="sendAction('admin_approve','${item.id}')">✅ Одобрить</button>
+                <button class="btn-reject" onclick="sendAction('admin_reject','${item.id}')">❌ Отклонить</button>
+                <button class="btn-ban" onclick="sendAction('admin_ban','${item.profiles?.telegram_id}','${item.id}')">🚫 Бан</button>
               </div>
             </div>
-          </div>`;
-      });
+          </div>
+        `).join('');
+
+      } catch (e) {
+        console.error(e);
+        stats.innerText = 'Ошибка загрузки';
+        showToast('Ошибка загрузки', 'error');
+      }
     }
 
-    async function loadUsers() {
-      const list = document.getElementById('users-list');
-      list.innerHTML = '';
-      const users = await sbGet('profiles?order=created_at.desc&limit=20');
-      if (!users || users.length === 0) { list.innerHTML = '<div class="empty">Нет пользователей</div>'; return; }
-      users.forEach(u => {
-        list.innerHTML += `
-          <div class="user-row">
-            <div>
-              <div class="user-name">@${u.username || '—'} — ${u.full_name || 'Без имени'}</div>
-              <div class="user-id">ID: ${u.telegram_id} · ${u.city || '—'}</div>
-            </div>
-          </div>`;
-      });
+    function condLabel(c) {
+      return c === 'new' ? 'Новое' : c === 'like_new' ? 'Как новое' : 'Б/у';
     }
 
-    function sendAction(action, itemId) {
-      console.log('Admin action:', action, itemId);
-      tg.sendData(JSON.stringify({ action: action, item_id: itemId }));
-      showToast('✅ Отправлено боту. Закройте WebApp.', 'success');
-    }
-    function sendBan(tgId) {
-      if (!tgId) { showToast('Нет ID пользователя', 'error'); return; }
-      console.log('Ban:', tgId);
-      tg.sendData(JSON.stringify({ action: 'admin_ban', tg_id: tgId }));
-      showToast('🚫 Забанен', 'success');
+    function escapeHtml(text) {
+      if (!text) return '';
+      return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
     }
 
-    async function loadAll() {
-      await loadStats();
-      await loadModeration();
-      await loadUsers();
+    function sendAction(action, itemId, cardId) {
+      // cardId используется только для бана, чтобы скрыть карточку
+      const targetId = cardId || itemId;
+
+      try {
+        const data = { action: action };
+        if (action === 'admin_ban') {
+          data.tg_id = itemId; // для бана itemId это tg_id
+        } else {
+          data.item_id = itemId;
+        }
+
+        tg.sendData(JSON.stringify(data));
+
+        // Скрываем карточку с анимацией
+        const card = document.getElementById(`card-${targetId}`);
+        if (card) {
+          card.classList.add('done');
+          setTimeout(() => card.remove(), 300);
+        }
+
+        const msg = action === 'admin_approve' ? '✅ Одобрено'
+                  : action === 'admin_reject' ? '❌ Отклонено'
+                  : '🚫 Забанен';
+        showToast(msg, 'success');
+
+        // Обновляем счётчик
+        setTimeout(() => {
+          const remaining = document.querySelectorAll('.card:not(.done)').length;
+          document.getElementById('stats').innerText = `На модерации: ${remaining}`;
+          if (remaining === 0) {
+            document.getElementById('list').innerHTML = '<div class="empty">✅ Нет объявлений на модерации</div>';
+          }
+        }, 350);
+
+      } catch (e) {
+        showToast('Ошибка отправки', 'error');
+      }
     }
-    loadAll();
+
+    document.getElementById('refreshBtn').addEventListener('click', loadPending);
+
+    // Загружаем при старте
+    loadPending();
   </script>
 </body>
 </html>
