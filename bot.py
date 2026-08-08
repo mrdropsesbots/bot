@@ -1,5 +1,6 @@
 from dotenv import load_dotenv
 load_dotenv()
+
 import os
 import json
 import logging
@@ -30,19 +31,28 @@ async def sb_get(path: str):
     async with aiohttp.ClientSession() as session:
         url = f"{SUPABASE_URL}/rest/v1/{path}"
         async with session.get(url, headers=HEADERS) as resp:
-            return await resp.json()
+            if resp.status == 200:
+                return await resp.json()
+            logging.error(f"sb_get error {resp.status}: {path}")
+            return []
 
 async def sb_post(path: str, data: dict):
     async with aiohttp.ClientSession() as session:
         url = f"{SUPABASE_URL}/rest/v1/{path}"
         async with session.post(url, headers=HEADERS, json=data) as resp:
-            return await resp.json()
+            if resp.status in (200, 201):
+                return await resp.json()
+            logging.error(f"sb_post error {resp.status}: {path} — {await resp.text()}")
+            return None
 
 async def sb_patch(path: str, data: dict):
     async with aiohttp.ClientSession() as session:
         url = f"{SUPABASE_URL}/rest/v1/{path}"
         async with session.patch(url, headers=HEADERS, json=data) as resp:
-            return await resp.json()
+            if resp.status in (200, 204):
+                return True
+            logging.error(f"sb_patch error {resp.status}: {path}")
+            return False
 
 async def sb_count(path: str, query: str = ""):
     async with aiohttp.ClientSession() as session:
@@ -50,7 +60,10 @@ async def sb_count(path: str, query: str = ""):
         h = {**HEADERS, "Prefer": "count=exact"}
         async with session.get(url, headers=h) as resp:
             range_header = resp.headers.get("content-range", "0-0/0")
-            return int(range_header.split("/")[-1])
+            try:
+                return int(range_header.split("/")[-1])
+            except (ValueError, IndexError):
+                return 0
 
 # ================== INIT BOT ==================
 bot = Bot(token=BOT_TOKEN)
@@ -90,34 +103,13 @@ async def vip(message: types.Message):
     )
 
 # ================== WEB APP DATA ==================
-# Найти профиль
-profile_url = f"{SUPABASE_URL}/rest/v1/profiles?telegram_id=eq.{user.id}"
-async with session.get(profile_url, headers=headers) as resp:
-    profiles = await resp.json()
-
-# Если нет — создать
-if not profiles:
-    new_profile = {
-        "telegram_id": user.id,
-        "username": user.username,
-        "full_name": user.full_name or user.username or "User"
-    }
-    async with session.post(
-        f"{SUPABASE_URL}/rest/v1/profiles",
-        headers=headers,
-        json=new_profile
-    ) as resp:
-        profiles = await resp.json()
-
-if not profiles:
-    await message.answer("❌ Не удалось создать профиль")
-    return
-
-profile_id = profiles[0]["id"]
-
 @dp.message_handler(content_types=types.ContentType.WEB_APP_DATA)
 async def web_data(message: types.Message):
-    data = json.loads(message.web_app_data.data)
+    try:
+        data = json.loads(message.web_app_data.data)
+    except json.JSONDecodeError:
+        return await message.answer("❌ Некорректные данные от WebApp.")
+
     action = data.get("action")
     user = message.from_user
 
@@ -137,6 +129,7 @@ async def web_data(message: types.Message):
         if "http" in title or "t.me/" in title or "@" in title:
             return await message.answer("❌ Нельзя размещать ссылки в названии.")
 
+        # Получить или создать профиль
         profs = await sb_get(f"profiles?telegram_id=eq.{user.id}")
         if not profs:
             await sb_post("profiles", {
@@ -146,11 +139,15 @@ async def web_data(message: types.Message):
                 "city": data.get("city", "Минск")
             })
             profs = await sb_get(f"profiles?telegram_id=eq.{user.id}")
+
+        if not profs:
+            return await message.answer("❌ Не удалось создать профиль. Попробуйте позже.")
+
         profile_id = profs[0]["id"]
 
         result = await sb_post("items", {
             "profile_id": profile_id,
-            "category_id": data["category_id"],
+            "category_id": data.get("category_id"),
             "title": title,
             "description": desc,
             "price": price,
@@ -161,16 +158,28 @@ async def web_data(message: types.Message):
             "status": "pending"
         })
 
+        if not result:
+            return await message.answer("❌ Ошибка сохранения объявления. Попробуйте позже.")
+
         await message.answer(
             "⏳ Объявление отправлено на модерацию.\n"
             "Обычно проверка занимает 10–30 минут."
         )
 
-        if ADMIN_ID and result:
-            await notify_admin(result[0]["id"], data, user)
+        item_id = result[0].get("id") if isinstance(result, list) and len(result) > 0 else None
+        if not item_id:
+            # Fallback: получить последнее созданное
+            last = await sb_get(f"items?profile_id=eq.{profile_id}&order=created_at.desc&limit=1")
+            item_id = last[0].get("id") if last else None
+
+        if ADMIN_ID and item_id:
+            await notify_admin(item_id, data, user)
 
     elif action == "interest":
-        item_id = data["item_id"]
+        item_id = data.get("item_id")
+        if not item_id:
+            return await message.answer("❌ Некорректный запрос.")
+
         items = await sb_get(f"items?id=eq.{item_id}&select=*,profiles(username,telegram_id)")
         if not items:
             return await message.answer("❌ Товар не найден")
@@ -206,9 +215,9 @@ async def notify_admin(item_id, data, user):
 
     text = (
         f"🆕 <b>Новое на модерацию</b>\n\n"
-        f"📦 <b>{data['title']}</b>\n"
-        f"💰 {data['price']} BYN · 🏙 {data.get('city','Минск')}\n"
-        f"📂 Категория ID: {data['category_id']}\n"
+        f"📦 <b>{data.get('title', 'Без названия')}</b>\n"
+        f"💰 {data.get('price', 0)} BYN · 🏙 {data.get('city','Минск')}\n"
+        f"📂 Категория ID: {data.get('category_id', '—')}\n"
         f"📝 {data.get('description','Нет описания')[:200]}\n\n"
         f"👤 @{user.username or 'нет'} · ID: <code>{user.id}</code>"
     )
@@ -321,10 +330,13 @@ async def approve_cb(call: types.CallbackQuery):
 
     old = call.message.caption or call.message.text or ""
     new_text = old + "\n\n✅ ОДОБРЕНО"
-    if call.message.photo:
-        await call.message.edit_caption(caption=new_text, reply_markup=None)
-    else:
-        await call.message.edit_text(text=new_text, reply_markup=None)
+    try:
+        if call.message.photo:
+            await call.message.edit_caption(caption=new_text, reply_markup=None)
+        else:
+            await call.message.edit_text(text=new_text, reply_markup=None)
+    except Exception:
+        pass
     await call.answer("Одобрено")
 
 @dp.callback_query_handler(lambda c: c.data.startswith('reject:'))
@@ -344,10 +356,13 @@ async def reject_cb(call: types.CallbackQuery):
 
     old = call.message.caption or call.message.text or ""
     new_text = old + "\n\n❌ ОТКЛОНЕНО"
-    if call.message.photo:
-        await call.message.edit_caption(caption=new_text, reply_markup=None)
-    else:
-        await call.message.edit_text(text=new_text, reply_markup=None)
+    try:
+        if call.message.photo:
+            await call.message.edit_caption(caption=new_text, reply_markup=None)
+        else:
+            await call.message.edit_text(text=new_text, reply_markup=None)
+    except Exception:
+        pass
     await call.answer("Отклонено")
 
 @dp.callback_query_handler(lambda c: c.data.startswith('ban:'))
@@ -356,6 +371,7 @@ async def ban_cb(call: types.CallbackQuery):
         return await call.answer("Нет доступа", show_alert=True)
 
     tg_id = call.data.split(":")[1]
+    # TODO: добавить таблицу bans в БД для реального бана
     await call.message.answer(f"🚫 Пользователь <code>{tg_id}</code> в бан-листе.", parse_mode="HTML")
     await call.answer("Забанен")
 
