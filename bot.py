@@ -22,7 +22,8 @@ WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
 # URL админ-панели
-ADMIN_WEBAPP_URL = WEBAPP_URL.replace("index.html", "admin.html") if "index.html" in WEBAPP_URL else (WEBAPP_URL.rstrip("/") + "/admin.html")
+ADMIN_WEBAPP_URL = (WEBAPP_URL.replace("index.html", "admin.html") if "index.html" in WEBAPP_URL else (WEBAPP_URL.rstrip("/") + "/admin.html")) + "?v=2"
+
 
 
 HEADERS = {
