@@ -163,8 +163,10 @@
   </div>
 
   <script>
-    const SUPABASE_URL='https://pfutmevbueqbfnhkwrrl.supabase.co';
-    const SUPABASE_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBmdXRtZXZidWVxYmZuaGt3cnJsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYxOTgwOTEsImV4cCI6MjEwMTc3NDA5MX0.hpTIoMmMJkTCdLLOyBv5HoTQ6eZnqR0e5f2v6PgR4Ok';
+    // ===== ВСТАВЬ СЮДА СВОЙ ANON KEY из Supabase =====
+    const SUPABASE_URL = 'https://pfutmevbueqbfnhkwrrl.supabase.co';
+    const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBmdXRtZXZidWVxYmZuaGt3cnJsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYxOTgwOTEsImV4cCI6MjEwMTc3NDA5MX0.hpTIoMmMJkTCdLLOyBv5HoTQ6eZnqR0e5f2v6PgR4Ok';
+
     let tg;
     try{tg=window.Telegram.WebApp;tg.ready();tg.expand()}catch(e){}
     const categories=[{id:1,name:'Одежда',icon:'👕'},{id:2,name:'Обувь',icon:'👟'},{id:3,name:'Техника',icon:'📱'},{id:4,name:'Мебель',icon:'🪑'},{id:5,name:'Детское',icon:'🧸'},{id:6,name:'Спорт',icon:'⚽'},{id:7,name:'Книги',icon:'📚'},{id:8,name:'Для дома',icon:'🏠'},{id:9,name:'Авто',icon:'🚗'},{id:10,name:'Другое',icon:'📦'}];
@@ -172,7 +174,33 @@
     function showToast(msg,type=''){const t=document.getElementById('toast');t.innerText=msg;t.className='toast '+type;t.style.display='block';setTimeout(()=>t.style.display='none',4000)}
     function initTabs(){const tabsEl=document.getElementById('catTabs');let html='<button class="tab active" data-cat="null">Все</button>';categories.forEach(c=>{html+=`<button class="tab" data-cat="${c.id}">${c.icon} ${c.name}</button>`});tabsEl.innerHTML=html;tabsEl.querySelectorAll('.tab').forEach(btn=>{btn.addEventListener('click',function(){const catId=this.getAttribute('data-cat');activeCat=catId==='null'?null:parseInt(catId);tabsEl.querySelectorAll('.tab').forEach(b=>b.classList.remove('active'));this.classList.add('active');render()})});document.getElementById('fCat').innerHTML=categories.map(c=>`<option value="${c.id}">${c.icon} ${c.name}</option>`).join('')}
     document.getElementById('fPhotos').addEventListener('change',async(e)=>{const files=Array.from(e.target.files).slice(0,5);uploadedPhotos=[];const prev=document.getElementById('photoPreview');prev.innerHTML='';showToast(`Загрузка ${files.length} фото...`);for(const file of files){const url=await uploadPhoto(file);if(url){uploadedPhotos.push(url);prev.innerHTML+=`<img src="${url}">`}}if(uploadedPhotos.length>0){showToast(`✅ Загружено ${uploadedPhotos.length} фото`,'success')}});
-    async function uploadPhoto(file){try{const filename=`${Date.now()}_${Math.random().toString(36).slice(2)}_${file.name}`;const res=await fetch(`${SUPABASE_URL}/storage/v1/object/item-images/${filename}`,{method:'POST',headers:{'Authorization':`Bearer ${SUPABASE_KEY}`},body:file});if(!res.ok){const err=await res.text();console.error('Upload error:',res.status,err);showToast(`Ошибка загрузки: ${res.status}`,'error');return null}return `${SUPABASE_URL}/storage/v1/object/public/item-images/${filename}`}catch(e){console.error('Upload exception:',e);showToast('Ошибка сети при загрузке','error');return null}}
+
+    // ===== ИСПРАВЛЕННАЯ ЗАГРУЗКА ФОТО =====
+    async function uploadPhoto(file) {
+      try {
+        const filename = `${Date.now()}_${Math.random().toString(36).slice(2)}_${file.name}`;
+        const res = await fetch(`${SUPABASE_URL}/storage/v1/object/item-images/${filename}`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${SUPABASE_KEY}`,
+            'apikey': SUPABASE_KEY   // ← БЕЗ ЭТОГО БУДЕТ 400
+          },
+          body: file
+        });
+        if (!res.ok) {
+          const err = await res.text();
+          console.error('Upload error:', res.status, err);
+          showToast(`Ошибка загрузки: ${res.status}`, 'error');
+          return null;
+        }
+        return `${SUPABASE_URL}/storage/v1/object/public/item-images/${filename}`;
+      } catch (e) {
+        console.error('Upload exception:', e);
+        showToast('Ошибка сети при загрузке', 'error');
+        return null;
+      }
+    }
+
     async function loadItems(){try{const res=await fetch(`${SUPABASE_URL}/rest/v1/items?select=*,profiles(username,full_name,telegram_id)&status=eq.approved&is_active=eq.true&order=created_at.desc`,{headers:{apikey:SUPABASE_KEY,Authorization:`Bearer ${SUPABASE_KEY}`}});allItems=await res.json();render()}catch(e){console.error('Load error:',e);showToast('Ошибка загрузки товаров','error')}}
     function condLabel(c){return c==='new'?'Новое':c==='like_new'?'Как новое':'Б/у'}
     function condColor(c){return c==='new'?'#34c759':c==='like_new'?'#ff9500':'#636366'}
@@ -202,7 +230,4 @@
     document.getElementById('cityFilter').addEventListener('change',render);
     document.getElementById('condFilter').addEventListener('change',render);
     initTabs();
-    loadItems();
-  </script>
-</body>
-</html>
+   
