@@ -4,6 +4,7 @@ load_dotenv()
 import os
 import json
 import logging
+import traceback
 from datetime import datetime
 import aiohttp
 from aiogram import Bot, Dispatcher, types
@@ -14,11 +15,14 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-WEBAPP_URL = os.getenv("WEBAPP_URL")
+WEBAPP_URL = os.getenv("WEBAPP_URL", "")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 WEBHOOK_HOST = os.getenv("RENDER_EXTERNAL_URL", "")
 WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+
+# URL админ-панели
+ADMIN_WEBAPP_URL = WEBAPP_URL.replace("index.html", "admin.html") if "index.html" in WEBAPP_URL else (WEBAPP_URL.rstrip("/") + "/admin.html")
 
 HEADERS = {
     "apikey": SUPABASE_KEY,
@@ -33,16 +37,21 @@ async def sb_get(path: str):
         async with session.get(url, headers=HEADERS) as resp:
             if resp.status == 200:
                 return await resp.json()
-            logging.error(f"sb_get error {resp.status}: {path}")
+            logging.error(f"sb_get error {resp.status}: {path} | {await resp.text()[:200]}")
             return []
 
 async def sb_post(path: str, data: dict):
     async with aiohttp.ClientSession() as session:
         url = f"{SUPABASE_URL}/rest/v1/{path}"
         async with session.post(url, headers=HEADERS, json=data) as resp:
+            text = await resp.text()
+            logging.info(f"sb_post {path} status={resp.status} body={text[:300]}")
             if resp.status in (200, 201):
-                return await resp.json()
-            logging.error(f"sb_post error {resp.status}: {path} — {await resp.text()}")
+                try:
+                    return json.loads(text)
+                except:
+                    return [{"id": "unknown"}]
+            logging.error(f"sb_post error {resp.status}: {path} | {text[:500]}")
             return None
 
 async def sb_patch(path: str, data: dict):
@@ -75,6 +84,8 @@ async def start(message: types.Message):
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("🛍 Открыть барахолку", web_app=WebAppInfo(url=WEBAPP_URL)))
     kb.add(InlineKeyboardButton("❓ Как продать", callback_data="help"))
+    if message.from_user.id == ADMIN_ID:
+        kb.add(InlineKeyboardButton("⚙️ Админ-панель", web_app=WebAppInfo(url=ADMIN_WEBAPP_URL)))
     await message.answer(
         "Привет! Здесь можно продать или купить вещи в Беларуси.\n\n"
         "Нажмите кнопку ниже 👇",
@@ -105,24 +116,61 @@ async def vip(message: types.Message):
 # ================== WEB APP DATA ==================
 @dp.message_handler(content_types=types.ContentType.WEB_APP_DATA)
 async def web_data(message: types.Message):
+    user = message.from_user
+    raw_data = message.web_app_data.data
+    logging.info(f"=== WEBAPP DATA from {user.id}: {raw_data[:500]} ===")
+
     try:
-        data = json.loads(message.web_app_data.data)
-    except json.JSONDecodeError:
+        data = json.loads(raw_data)
+    except json.JSONDecodeError as e:
+        logging.error(f"JSON decode error: {e}")
         return await message.answer("❌ Некорректные данные от WebApp.")
 
     action = data.get("action")
-    user = message.from_user
+    logging.info(f"Action: {action}")
 
+    # ===== ADMIN ACTIONS =====
+    if action in ("admin_approve", "admin_reject", "admin_ban"):
+        if user.id != ADMIN_ID:
+            return await message.answer("⛔️ Нет доступа.")
+
+        if action == "admin_approve":
+            item_id = data.get("item_id")
+            await sb_patch(f"items?id=eq.{item_id}", {"status": "approved", "is_active": True})
+            items = await sb_get(f"items?id=eq.{item_id}&select=*,profiles(telegram_id)")
+            if items:
+                await bot.send_message(items[0]["profiles"]["telegram_id"],
+                    f"✅ Ваше объявление одобрено!\n\n📦 {items[0]['title']}\n💰 {items[0]['price']} BYN")
+            await message.answer(f"✅ Объявление {item_id} одобрено.")
+
+        elif action == "admin_reject":
+            item_id = data.get("item_id")
+            await sb_patch(f"items?id=eq.{item_id}", {"status": "rejected", "is_active": False})
+            items = await sb_get(f"items?id=eq.{item_id}&select=*,profiles(telegram_id)")
+            if items:
+                await bot.send_message(items[0]["profiles"]["telegram_id"],
+                    "❌ Ваше объявление отклонено.\n\nВозможные причины: запрещённый товар, некорректное описание, отсутствие фото.")
+            await message.answer(f"❌ Объявление {item_id} отклонено.")
+
+        elif action == "admin_ban":
+            tg_id = data.get("tg_id")
+            await message.answer(f"🚫 Пользователь <code>{tg_id}</code> в бан-листе.", parse_mode="HTML")
+        return
+
+    # ===== USER: CREATE ITEM =====
     if action == "create_item":
         title = data.get("title", "").strip()
         desc = data.get("description", "").strip()
         price = data.get("price", 0)
+        photos = data.get("photos", [])
+
+        logging.info(f"create_item: title={title}, price={price}, photos_count={len(photos)}")
 
         if len(title) < 3:
             return await message.answer("❌ Слишком короткое название. Минимум 3 символа.")
         if price > 100000:
             return await message.answer("❌ Цена слишком высокая. Максимум 100 000 BYN.")
-        
+
         banned = ["кокаин", "героин", "оружие", "паспорт", "права", "диплом", "наркотик", "пистолет", "травмат", "куплю почку"]
         if any(word in (title + " " + desc).lower() for word in banned):
             return await message.answer("❌ Объявление содержит запрещённый товар.")
@@ -131,7 +179,10 @@ async def web_data(message: types.Message):
 
         # Получить или создать профиль
         profs = await sb_get(f"profiles?telegram_id=eq.{user.id}")
+        logging.info(f"Profiles found: {len(profs)}")
+
         if not profs:
+            logging.info(f"Creating profile for {user.id}")
             await sb_post("profiles", {
                 "telegram_id": user.id,
                 "username": user.username,
@@ -141,9 +192,11 @@ async def web_data(message: types.Message):
             profs = await sb_get(f"profiles?telegram_id=eq.{user.id}")
 
         if not profs:
+            logging.error("Profile creation failed")
             return await message.answer("❌ Не удалось создать профиль. Попробуйте позже.")
 
         profile_id = profs[0]["id"]
+        logging.info(f"Profile ID: {profile_id}")
 
         result = await sb_post("items", {
             "profile_id": profile_id,
@@ -153,10 +206,12 @@ async def web_data(message: types.Message):
             "price": price,
             "condition": data.get("condition", "used"),
             "city": data.get("city", "Минск"),
-            "photos": data.get("photos", []),
+            "photos": photos,
             "is_active": False,
             "status": "pending"
         })
+
+        logging.info(f"sb_post items result: {result}")
 
         if not result:
             return await message.answer("❌ Ошибка сохранения объявления. Попробуйте позже.")
@@ -166,11 +221,14 @@ async def web_data(message: types.Message):
             "Обычно проверка занимает 10–30 минут."
         )
 
-        item_id = result[0].get("id") if isinstance(result, list) and len(result) > 0 else None
+        item_id = None
+        if isinstance(result, list) and len(result) > 0:
+            item_id = result[0].get("id")
+
         if not item_id:
-            # Fallback: получить последнее созданное
             last = await sb_get(f"items?profile_id=eq.{profile_id}&order=created_at.desc&limit=1")
             item_id = last[0].get("id") if last else None
+            logging.info(f"Fallback item_id: {item_id}")
 
         if ADMIN_ID and item_id:
             await notify_admin(item_id, data, user)
@@ -183,7 +241,7 @@ async def web_data(message: types.Message):
         items = await sb_get(f"items?id=eq.{item_id}&select=*,profiles(username,telegram_id)")
         if not items:
             return await message.answer("❌ Товар не найден")
-        
+
         item = items[0]
         seller_tg = item["profiles"]["telegram_id"]
 
@@ -233,38 +291,12 @@ async def notify_admin(item_id, data, user):
 
 # ================== ADMIN COMMANDS ==================
 @dp.message_handler(commands=['admin'])
-async def admin_panel(message: types.Message):
+async def admin_cmd(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return await message.answer("⛔️ Только для админа.")
-
-    total_users = await sb_count("profiles")
-    total_items = await sb_count("items")
-    pending = await sb_count("items", "status=eq.pending")
-    approved = await sb_count("items", "status=eq.approved")
-    rejected = await sb_count("items", "status=eq.rejected")
-
-    today = datetime.now().strftime("%Y-%m-%d")
-    today_items = await sb_count("items", f"created_at=gte.{today}")
-    today_users = await sb_count("profiles", f"created_at=gte.{today}")
-
-    text = (
-        f"📊 <b>Админ-панель</b>\n\n"
-        f"👤 Пользователи: {total_users} (сегодня: +{today_users})\n"
-        f"📦 Объявления: {total_items}\n"
-        f"   🔥 На модерации: {pending}\n"
-        f"   ✅ Одобрено: {approved}\n"
-        f"   ❌ Отклонено: {rejected}\n"
-        f"   📅 Сегодня: +{today_items}\n\n"
-        f"/moderate — модерация\n"
-        f"/users — последние юзеры"
-    )
-
     kb = InlineKeyboardMarkup()
-    kb.row(
-        InlineKeyboardButton("🔥 На модерации", callback_data="admin:moderate"),
-        InlineKeyboardButton("♻️ Обновить", callback_data="admin:refresh")
-    )
-    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+    kb.add(InlineKeyboardButton("⚙️ Открыть админ-панель", web_app=WebAppInfo(url=ADMIN_WEBAPP_URL)))
+    await message.answer("Админ-панель:", reply_markup=kb)
 
 @dp.message_handler(commands=['moderate'])
 async def moderate_cmd(message: types.Message):
@@ -371,19 +403,8 @@ async def ban_cb(call: types.CallbackQuery):
         return await call.answer("Нет доступа", show_alert=True)
 
     tg_id = call.data.split(":")[1]
-    # TODO: добавить таблицу bans в БД для реального бана
     await call.message.answer(f"🚫 Пользователь <code>{tg_id}</code> в бан-листе.", parse_mode="HTML")
     await call.answer("Забанен")
-
-@dp.callback_query_handler(lambda c: c.data == 'admin:refresh')
-async def admin_refresh_cb(call: types.CallbackQuery):
-    await call.answer("Обновлено")
-    await admin_panel(call.message)
-
-@dp.callback_query_handler(lambda c: c.data == 'admin:moderate')
-async def admin_moderate_cb(call: types.CallbackQuery):
-    await call.answer()
-    await moderate_cmd(call.message)
 
 # ================== STARTUP / SHUTDOWN ==================
 async def on_startup(dp):
